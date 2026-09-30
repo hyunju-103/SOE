@@ -1,0 +1,63 @@
+<title>__APP_TITLE__</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap">
+<style>
+/*__APP_CSS__*/
+</style>
+
+<header class="band">
+  <div class="inner">
+    <div>
+      <div class="eyebrow">SOE Fiscal Risk Tool</div>
+      <h1 id="appTitle">__APP_TITLE__</h1>
+    </div>
+    <div class="meta" id="meta"></div>
+  </div>
+</header>
+
+<nav class="tabs" aria-label="Pages">
+  <div class="inner">
+    <ul role="tablist" id="tabs">
+      <li><button role="tab" id="t-home" aria-controls="home" data-tab="home">Home</button></li>
+      <li><button role="tab" id="t-report" aria-controls="report" data-tab="report">Report</button></li>
+      <li><button role="tab" id="t-kpi" aria-controls="kpi" data-tab="kpi">KPI Dashboard</button></li>
+      <li><button role="tab" id="t-altman" aria-controls="altman" data-tab="altman">Altman Z-EM</button></li>
+      <li><button role="tab" id="t-efc" aria-controls="efc" data-tab="efc">Expected Fiscal Cost</button></li>
+      <li><button role="tab" id="t-shock" aria-controls="shock" data-tab="shock">Shock Scenarios</button></li>
+      <li><button role="tab" id="t-gre" aria-controls="gre" data-tab="gre">Government Support</button></li>
+      <li><button role="tab" id="t-warning" aria-controls="warning" data-tab="warning">Early Warning</button></li>
+      <li><button role="tab" id="t-assumptions" aria-controls="assumptions" data-tab="assumptions">Assumptions</button></li>
+    </ul>
+  </div>
+</nav>
+
+<div class="filterbar" id="filterbar" hidden>
+  <div class="inner">
+    <div class="chips" role="group" aria-label="Sector filter"><span class="chips-label">Sector</span><div class="chips" id="sectorChips"></div></div>
+    <div class="asof" id="asof"></div>
+  </div>
+</div>
+
+<main class="wrap" id="wrap">
+  <section class="page" id="home" role="tabpanel" aria-labelledby="t-home" hidden></section>
+  <section class="page" id="report" role="tabpanel" aria-labelledby="t-report" hidden></section>
+  <section class="page" id="kpi" role="tabpanel" aria-labelledby="t-kpi" hidden></section>
+  <section class="page" id="altman" role="tabpanel" aria-labelledby="t-altman" hidden></section>
+  <section class="page" id="efc" role="tabpanel" aria-labelledby="t-efc" hidden></section>
+  <section class="page" id="shock" role="tabpanel" aria-labelledby="t-shock" hidden></section>
+  <section class="page" id="gre" role="tabpanel" aria-labelledby="t-gre" hidden></section>
+  <section class="page" id="warning" role="tabpanel" aria-labelledby="t-warning" hidden></section>
+  <section class="page" id="assumptions" role="tabpanel" aria-labelledby="t-assumptions" hidden></section>
+</main>
+
+<div class="tip" id="tip" hidden></div>
+
+<script id="app-config" type="application/json">/*__APP_CONFIG__*/{}</script>
+<script id="app-data" type="application/json">/*__APP_DATA__*/{}</script>
+<script>
+/*__ENGINE_JS__*/
+</script>
+<script>
+/*__APP_JS__*/
+</script>
