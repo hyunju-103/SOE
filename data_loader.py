@@ -7,6 +7,7 @@ not block ingestion.
 
 import io
 
+import numpy as np
 import pandas as pd
 
 import config
@@ -191,6 +192,76 @@ def demo_portfolio() -> pd.DataFrame:
     df["Extraction Method"] = ["Manual" if e in ("SOE A", "SOE B") else "Machine" for e in df["Entity"]]
     df["Data Quality Flag"] = ["Proxy" if (e == "SOE E" and y >= 2023) else "Observed" for e, y in zip(df["Entity"], df["Year"])]
     return df
+
+
+LONG_PANEL_LABEL = "Long-panel test data: 30 invented SOEs, 2005–2024"
+
+
+def long_panel_demo(n_soes: int = 30, first_year: int = 2005, last_year: int = 2024, seed: int = 7) -> pd.DataFrame:
+    """Invented 30-SOE x 20-year panel for checking how the tool reads long
+    histories and large portfolios (KPI trends as lines, year ranges, the
+    "12 weakest first" lists). Deterministic (fixed seed). Not real data.
+
+    Each SOE follows a simple path: revenue grows with noise; the EBIT margin,
+    leverage and current ratio drift (improving, stable or deteriorating);
+    retained earnings accumulate net income. About half the SOEs also report
+    FX debt, short-term debt and government-guaranteed debt, so the
+    bottom-up exposures and the observed-EAD option have something to use."""
+    rng = np.random.default_rng(seed)
+    sectors = ["Power / Utilities", "Transport", "Energy", "Agriculture", "Telecoms", "Industry", "Other"]
+    years = list(range(first_year, last_year + 1))
+    n_y = len(years)
+    rows = []
+    for i in range(n_soes):
+        sector = sectors[i % len(sectors)]
+        trend = rng.choice([-1, 0, 1], p=[0.35, 0.3, 0.35])          # deteriorating / stable / improving
+        rev = float(rng.lognormal(np.log(4e8), 0.8))
+        g_mu, g_sd = rng.uniform(0.0, 0.07), rng.uniform(0.03, 0.12)
+        m0 = rng.uniform(-0.02, 0.16) + (0.04 if trend > 0 else 0)
+        m_drift = trend * rng.uniform(0.002, 0.009)
+        turnover = rng.uniform(0.25, 0.8)
+        lev0 = rng.uniform(0.35, 0.8)
+        lev_drift = -trend * rng.uniform(0.003, 0.015)
+        ca_share = rng.uniform(0.12, 0.3)
+        cr0, cr_drift = rng.uniform(0.8, 2.2), trend * rng.uniform(0.0, 0.04)
+        dep_share, rate = rng.uniform(0.05, 0.12), rng.uniform(0.03, 0.07)
+        grant_share = rng.choice([0.0, rng.uniform(0.02, 0.15), rng.uniform(0.2, 0.6)], p=[0.45, 0.4, 0.15])
+        reports_debt = rng.random() < 0.5
+        fx_share, st_share, gd_share = rng.uniform(0.05, 0.8), rng.uniform(0.05, 0.4), rng.uniform(0.1, 0.7)
+        fuel_share = config.SECTOR_FUEL_COST_SHARE.get(sector, 0.15) * rng.uniform(0.6, 1.4)
+        re = None
+        for t, y in enumerate(years):
+            if t:
+                rev *= 1 + g_mu + g_sd * rng.standard_normal()
+            margin = float(np.clip(m0 + m_drift * t + 0.03 * rng.standard_normal(), -0.45, 0.4))
+            ta = rev / turnover * (1 + 0.02 * rng.standard_normal())
+            lev = float(np.clip(lev0 + lev_drift * t + 0.03 * rng.standard_normal(), 0.15, 1.35))
+            tl = lev * ta
+            ebit = margin * rev
+            dep = dep_share * rev
+            interest = rate * tl
+            tax = max(0.0, 0.25 * (ebit - interest))
+            ni = ebit - interest - tax
+            re = (rng.uniform(-0.05, 0.25) * ta) if re is None else re + ni
+            ca = ca_share * ta
+            cr = float(np.clip(cr0 + cr_drift * t + 0.1 * rng.standard_normal(), 0.25, 4.0))
+            opex = rev - ebit - dep
+            row = {
+                "Entity": f"SOE {i + 1:02d}", "Year": y, "Sector": sector,
+                "Revenues": round(rev), "Total Expense": round(opex + dep + interest), "Operating Expense": round(opex),
+                "Operating Profits (EBIT)": round(ebit), "Net Income": round(ni), "Current Assets": round(ca),
+                "Total Assets": round(ta), "Current Liabilities": round(ca / cr), "Total Liabilities": round(tl),
+                "Equity": round(ta - tl), "Retained Earnings": round(re), "Interest Expense": round(interest),
+                "Tax Expense": round(tax), "EBITDA": round(ebit + dep), "Government Grants": round(max(0.0, grant_share * (1 + 0.2 * rng.standard_normal())) * rev),
+                "Depreciation": round(dep), "Currency": "LCU", "Units": "Absolute",
+            }
+            if reports_debt:
+                row.update({"FX Debt": round(fx_share * tl), "Short Term Debt": round(st_share * tl),
+                            "Government Guaranteed Debt": round(gd_share * tl)})
+            if sector in ("Energy", "Power / Utilities", "Transport"):
+                row["Fuel Cost"] = round(fuel_share * opex)
+            rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def template_excel_bytes() -> bytes:

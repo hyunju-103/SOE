@@ -192,6 +192,12 @@ with ex2:
         st.session_state.sample_label = "Illustrative demo portfolio: 8 invented SOEs"
         st.rerun()
     st.caption("The two sample SOEs plus six invented ones spanning safe, grey and distress — for demos.")
+if st.button("Try a long panel: 30 SOEs × 20 years (test data)"):
+    st.session_state.soe_df = data_loader.long_panel_demo()
+    st.session_state.using_sample = True
+    st.session_state.sample_label = data_loader.LONG_PANEL_LABEL
+    st.rerun()
+st.caption("Invented 2005–2024 panel to see how 20-year histories and 30-SOE portfolios are drawn.")
 st.markdown("</div>", unsafe_allow_html=True)
 
 # ------------------------------------------------------------------ #

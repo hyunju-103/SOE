@@ -129,6 +129,13 @@ def rows_payload(raw_df: pd.DataFrame) -> list:
 # --------------------------------------------------------------------------
 # app builder
 # --------------------------------------------------------------------------
+def _pack(recs: list) -> dict:
+    """Rows as {cols, data}: column names once, then one list of values per
+    row — about half the size of repeating every key (app.js unpacks it)."""
+    cols = list(dict.fromkeys(k for r in recs for k in r))
+    return {"cols": cols, "data": [[r.get(c) for c in cols] for r in recs]}
+
+
 def build_app_data(
     raw_df: pd.DataFrame,
     lgd_pct: float = config.LGD_SLIDER_DEFAULT,
@@ -152,9 +159,11 @@ def build_app_data(
         "allow_download": bool(allow_download),
     }
     datasets = {
-        "report": {"rows": rows, "label": data_label or "Report data", "example": bool(is_example)},
-        "sample": {"rows": rows_payload(data_loader.sample_dataset()), "label": "Built-in sample: SOE A (Energy), SOE B (Transport)", "example": True},
-        "demo": {"rows": rows_payload(data_loader.demo_portfolio()), "label": "Illustrative demo portfolio: 8 invented SOEs", "example": True},
+        "report": dict(_pack(rows), label=data_label or "Report data", example=bool(is_example)),
+        "sample": dict(_pack(rows_payload(data_loader.sample_dataset())), label="Built-in sample: SOE A (Energy), SOE B (Transport)", example=True),
+        "demo": dict(_pack(rows_payload(data_loader.demo_portfolio())), label="Illustrative demo portfolio: 8 invented SOEs", example=True),
+        # 30 invented SOEs x 20 years, to see how long histories and large portfolios are drawn
+        "long": dict(_pack(rows_payload(data_loader.long_panel_demo())), label=data_loader.LONG_PANEL_LABEL, example=True),
     }
     return {"config": config_payload(), "data": {"meta": meta, "datasets": datasets}}
 

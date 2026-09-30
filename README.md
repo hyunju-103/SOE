@@ -98,7 +98,9 @@ offline, follows the viewer's light/dark setting, and people can load their
 own CSV/Excel file into it (headers are matched to the schema the same way
 as in Python).
 
-Long panels: year chips are replaced by from–to year selects; a KPI trend
+Long panels: Home has a "Try a long panel" button (30 invented SOEs,
+2005–2024, `data_loader.long_panel_demo()`) to see how they are drawn. Year
+chips are replaced by from–to year selects; a KPI trend
 with 11 or more years is drawn as a line (latest point marked, labels
 thinned) instead of bars; bar lists with more than 12 SOEs show the 12
 weakest (or largest EFC) first with a "Show all" button.

@@ -377,6 +377,9 @@
     (opt.band || []).forEach((b) => { vals = vals.concat(b.lo.filter(ok), b.hi.filter(ok)); });
     (opt.hlines || []).forEach((h) => { if (h.include) vals.push(h.y); });
     let lo = Math.min(...vals), hi = Math.max(...vals);
+    // a nearly flat series gets a small band around it instead of a magnified wiggle
+    const mag = Math.max(Math.abs(lo), Math.abs(hi));
+    if (hi - lo < mag * 0.04) { const mid = (hi + lo) / 2, h = Math.max(mag * 0.04, 1e-9); lo = mid - h; hi = mid + h; }
     if (opt.zones) { lo = Math.min(lo, CFG.Z_DISTRESS_CUTOFF - 0.3); hi = Math.max(hi, CFG.Z_SAFE_CUTOFF + 0.3); }
     if (opt.zeroFloor) lo = Math.min(0, lo);
     const pad = (hi - lo || 1) * 0.06; lo -= opt.zeroFloor && lo >= 0 ? 0 : pad; hi += pad;
@@ -444,6 +447,8 @@
      ===================================================================== */
   const S = { tab: "home", sectorSel: new Set(), built: {} };
   const DATASETS = DATA.datasets || {};
+  // report.py packs each dataset as {cols, data}; unpack to one object per row
+  for (const k in DATASETS) { const d = DATASETS[k]; if (!d.rows && d.cols) d.rows = d.data.map((r) => Object.fromEntries(d.cols.map((c, i) => [c, r[i]]))); }
   const coerceRows = (rows) => rows.map((r) => {
     const o = {};
     for (const k in r) {
@@ -669,6 +674,7 @@
       if (DATASETS.report && S.key !== "report") btns.appendChild(el("button", { class: "btn", type: "button", onclick: () => loadDataset(DATASETS.report.rows, DATASETS.report.label, DATASETS.report.example, "report") }, "Back to: " + DATASETS.report.label));
       if (DATASETS.sample) btns.appendChild(el("button", { class: "btn", type: "button", onclick: () => loadDataset(DATASETS.sample.rows, DATASETS.sample.label, true, "sample") }, "Use example data (SOE A — Energy, SOE B — Transport)"));
       if (DATASETS.demo) btns.appendChild(el("button", { class: "btn", type: "button", onclick: () => loadDataset(DATASETS.demo.rows, DATASETS.demo.label, true, "demo") }, "Use demo portfolio (8 SOEs, 7 sectors)"));
+      if (DATASETS.long) btns.appendChild(el("button", { class: "btn", type: "button", onclick: () => loadDataset(DATASETS.long.rows, DATASETS.long.label, true, "long") }, "Try a long panel: 30 SOEs × 20 years (test data)"));
       const msg = el("div");
       const input = el("input", { type: "file", id: "upload", accept: ".csv,.xlsx,.xls", style: "max-width:100%" });
       const dz = el("div", { class: "dropzone" }, el("label", { class: "lbl", for: "upload" }, "Upload your own data — CSV or Excel, one row per SOE-year"), input,
@@ -790,7 +796,7 @@
     return fmt(v, Math.abs(v) >= 100 ? 0 : Math.abs(v) >= 10 ? 1 : 2) + "×";
   }
   const kpiTitle = (k) => `${SPEC[k].label} (${SPEC[k].unit === "%" ? "%" : "x"})`;
-  function kpiTick(key) { return SPEC[key].unit === "%" ? (t) => fmt(t * 100, 0) + "%" : (t, s) => tickLab(t, s) + "×"; }
+  function kpiTick(key) { return SPEC[key].unit === "%" ? (t, s) => fmt(t * 100, !s || s * 100 >= 1 ? 0 : s * 100 >= 0.1 ? 1 : 2) + "%" : (t, s) => tickLab(t, s) + "×"; }
   function cutText(key) {
     const sp = SPEC[key], f = (v) => (sp.unit === "%" ? fmt(v * 100, 0) + "%" : fmt(v, 1) + "×");
     return sp.direction === "higher_is_better" ? `alert < ${f(sp.red_cut)}, good ≥ ${f(sp.green_cut)}` : `alert > ${f(sp.red_cut)}, good ≤ ${f(sp.green_cut)}`;
