@@ -190,6 +190,28 @@ def match_column(label: str):
     return None, "unmatched", 0.0
 
 
+HEADER_SCAN_ROWS = 15
+HEADER_MIN_MATCHES = 3
+
+
+def find_header_row(rows) -> int:
+    """Index of the header row in a sheet read without headers: among the
+    first HEADER_SCAN_ROWS rows, the first one whose cells match the most
+    distinct schema columns (title or note rows above the table are skipped).
+    0 when no row matches at least HEADER_MIN_MATCHES columns."""
+    best, best_n = 0, HEADER_MIN_MATCHES - 1
+    for i, row in enumerate(list(rows)[:HEADER_SCAN_ROWS]):
+        cols = set()
+        for cell in row:
+            if isinstance(cell, str) and cell.strip():
+                col, _how, _score = match_column(cell)
+                if col:
+                    cols.add(col)
+        if len(cols) > best_n:
+            best, best_n = i, len(cols)
+    return best
+
+
 CONFIDENCE = {"exact": "HIGH", "synonym": "MEDIUM", "spelling": "LOW", "unmatched": "—", "duplicate": "—"}
 
 
@@ -242,4 +264,5 @@ def dictionary_frame() -> pd.DataFrame:
 
 def payload() -> dict:
     """What the HTML version needs to apply the same matching in the browser."""
-    return {"variables": VARIABLES, "fuzzy_cutoff": FUZZY_CUTOFF, "statements": STATEMENTS}
+    return {"variables": VARIABLES, "fuzzy_cutoff": FUZZY_CUTOFF, "statements": STATEMENTS,
+            "header_scan_rows": HEADER_SCAN_ROWS, "header_min_matches": HEADER_MIN_MATCHES}

@@ -217,7 +217,6 @@
   }
   /** long lists show the first LIMIT rows (the weakest or largest) until the reader asks for all */
   const LIMIT = 12;
-  const LINE_CHART_MIN_YEARS = 11;
   function moreToggle(n, expanded, onToggle, less = `Show the ${LIMIT} weakest only`, what = "SOEs") {
     if (n <= LIMIT) return null;
     return el("button", { class: "btn-ghost more", type: "button", "aria-expanded": String(expanded), onclick: () => onToggle(!expanded) }, expanded ? less : `Show all ${n} ${what}`);
@@ -279,6 +278,8 @@
     dist: '<svg width="12" height="12" aria-hidden="true"><rect width="12" height="12" class="z-crit"/></svg>',
     thrC: '<svg width="20" height="10" aria-hidden="true"><line x1="1" y1="5" x2="19" y2="5" class="thr-crit"/></svg>',
     thrW: '<svg width="20" height="10" aria-hidden="true"><line x1="1" y1="5" x2="19" y2="5" class="thr-warn"/></svg>',
+    thrG: '<svg width="20" height="10" aria-hidden="true"><line x1="1" y1="5" x2="19" y2="5" class="thr-good"/></svg>',
+    hl: '<svg width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.5" class="dot-hl"/></svg>',
     ref: '<svg width="20" height="10" aria-hidden="true"><line x1="1" y1="5" x2="19" y2="5" class="ref-l"/></svg>',
     bar: '<svg width="12" height="12" aria-hidden="true"><rect x="1" y="1" width="10" height="10" rx="2" style="fill:var(--accent)"/></svg>',
     barHl: '<svg width="12" height="12" aria-hidden="true"><rect x="1" y="1" width="10" height="10" rx="2" style="fill:var(--heading)"/></svg>',
@@ -391,19 +392,36 @@
     for (const t of sc.ticks) { svgEl("line", { x1: L, x2: W - R, y1: y(t), y2: y(t), class: t === 0 ? "zero-l" : "grid-l" }, svg); txt(svg, L - 6, y(t), opt.yFmt ? opt.yFmt(t, sc.step) : tickLab(t, sc.step), "t-muted num", "end", 11); }
     (opt.hlines || []).forEach((h) => { if (h.y >= sc.lo && h.y <= sc.hi) { svgEl("line", { x1: L, x2: W - R, y1: y(h.y), y2: y(h.y), class: h.cls }, svg); if (h.label) txt(svg, W - R + 4, y(h.y), h.label, "t-muted", "start", 10.5, 600); } });
     if (opt.active && n > 1) svgEl("rect", { x: x(opt.active[0] - 0.5), y: H - B + 1, width: x(Math.min(opt.active[1] + 0.5, n - 1)) - x(opt.active[0] - 0.5), height: 5, class: "act-band" }, svg);
-    const step = Math.max(1, Math.ceil(n / Math.max(2, Math.floor((W - L - R) / 56))));
-    xs.forEach((xv, i) => { if (i % step === 0 || i === n - 1) txt(svg, x(i), H - B + 20, opt.xLab ? opt.xLab(i) : String(xv), "t-muted num", "middle", 11); });
+    // label every step-th point counting back from the last one, so the latest year is always labelled and never crowded
+    const step = Math.max(1, Math.ceil(n / Math.max(2, Math.floor((W - L - R) / 44))));
+    // the first year too, when it is not too close to the next label
+    xs.forEach((xv, i) => { if ((n - 1 - i) % step === 0 || (i === 0 && (n - 1) % step >= step * 0.6)) txt(svg, x(i), H - B + 20, opt.xLab ? opt.xLab(i) : String(xv), "t-muted num", "middle", 11); });
     (opt.band || []).forEach((b) => {
-      const pts = b.hi.map((v, i) => `${x(i)},${y(v)}`).concat(b.lo.map((v, i) => [i, v]).reverse().map(([i, v]) => `${x(i)},${y(v)}`));
+      const idx = b.hi.map((v, i) => i).filter((i) => ok(b.hi[i]) && ok(b.lo[i])); // skip years where a band edge is missing
+      if (idx.length < 2) return;
+      const pts = idx.map((i) => `${x(i)},${y(b.hi[i])}`).concat(idx.slice().reverse().map((i) => `${x(i)},${y(b.lo[i])}`));
       svgEl("polygon", { points: pts.join(" "), class: b.cls }, svg);
     });
     const dense = n > (opt.maxDots || 15); // long series: dot the latest point only
     series.forEach((s) => {
-      const d = s.vals.map((v, i) => [i, v]).filter(([, v]) => ok(v)).map(([i, v], k) => `${k ? "L" : "M"}${x(i)},${y(v)}`).join("");
+      let d = "", prev = false; // a missing value breaks the line instead of bridging it
+      s.vals.forEach((v, i) => { if (ok(v)) { d += `${prev ? "L" : "M"}${x(i)},${y(v)}`; prev = true; } else prev = false; });
       if (d) svgEl("path", { d, class: s.cls }, svg);
-      if (s.dot) s.vals.forEach((v, i) => { if (ok(v) && !(s.skipFirstDot && i === 0) && (!dense || i === n - 1)) svgEl("circle", { cx: x(i), cy: y(v), r: s.dot === "prev" ? 4 : 4.5, class: "dot-" + s.dot }, svg); });
+      let lastOk = -1; s.vals.forEach((v, i) => { if (ok(v)) lastOk = i; });
+      if (s.dot) s.vals.forEach((v, i) => {
+        const isolated = !ok(s.vals[i - 1]) && !ok(s.vals[i + 1]); // no line reaches it, so it needs a dot
+        if (!ok(v) || (s.skipFirstDot && i === 0) || (dense && i !== lastOk && !isolated)) return;
+        const c = s.lastDot && i === lastOk ? s.lastDot : s.dot;
+        svgEl("circle", { cx: x(i), cy: y(v), r: c === "prev" ? 4 : c === "now" && s.lastDot ? 5 : 4.5, class: "dot-" + c }, svg);
+      });
     });
-    if (opt.endLabel) { const s = series[opt.endLabel.series], v = last(s.vals); if (ok(v)) txt(svg, x(n - 1) + 9, y(v), opt.endLabel.fmt(v), "t-ink num", "start", 12, 700); }
+    if (opt.endLabel) {
+      const s = series[opt.endLabel.series];
+      let j = s.vals.length - 1; while (j >= 0 && !ok(s.vals[j])) j--;
+      if (j >= 0) txt(svg, x(j) + 9, y(s.vals[j]), opt.endLabel.fmt(s.vals[j]), "t-ink num", j === n - 1 ? "start" : "start", 12, 700);
+    }
+    if (opt.naMarks) series[0].vals.forEach((v, i) => { if (!ok(v)) txt(svg, x(i), H - B - 8, "n/a", "t-muted", "middle", 10, 600); });
+
     const xh = svgEl("line", { x1: 0, x2: 0, y1: T, y2: H - B, class: "xhair", visibility: "hidden" }, svg);
     const bw = (W - R - L) / Math.max(1, n);
     xs.forEach((xv, i) => {
@@ -452,7 +470,7 @@
   const coerceRows = (rows) => rows.map((r) => {
     const o = {};
     for (const k in r) {
-      if (NUMCOLS.has(k)) { const v = r[k]; o[k] = v === null || v === undefined || String(v).trim() === "" ? NaN : Number(String(v).trim()); }
+      if (NUMCOLS.has(k)) o[k] = k === "Year" ? E.parseYear(r[k]) : E.parseNumber(r[k]); // spreadsheet formats: 1,234 · (1,234) · 35% · FY2023
       else o[k] = r[k] === null || r[k] === undefined ? "" : String(r[k]);
     }
     return o;
@@ -737,6 +755,7 @@
     },
   };
   function readUpload(file, msg) {
+    let headerNote = "";
     const done = (raw) => {
       if (!raw.length) { msg.replaceChildren(el("div", { class: "alert-box warn", style: "margin-top:10px" }, "The file has no data rows.")); return; }
       const mp = E.standardizeColumns(Object.keys(raw[0]));
@@ -751,17 +770,27 @@
       const co = coerceRows(rows);
       const bad = co.filter((r) => reqNum.some((c) => !ok(r[c]))).length;
       S.mapping = { report: mp.report };
-      S.uploadNote = `✓ Loaded ${pl(uniq(co.map((r) => r.Entity)).length, "SOE")}, ${co.length} SOE-year rows from ${file.name}.` + (bad ? ` ${bad} row(s) have non-numeric or missing required values.` : "");
+      S.uploadNote = `✓ Loaded ${pl(uniq(co.map((r) => r.Entity)).length, "SOE")}, ${co.length} SOE-year rows from ${file.name}.` + (headerNote.trim() ? " " + headerNote.trim() : "") + (bad ? ` ${bad} row(s) have non-numeric or missing required values — check the data preview below.` : "");
       loadDataset(rows, file.name, false, "upload");
       showTab("home", true);
     };
     const fail = (e) => msg.replaceChildren(el("div", { class: "alert-box warn", style: "margin-top:10px" }, `Couldn't read that file: ${e}`));
+    const take = (rows, how) => { const f = E.frameFromRows(rows); headerNote = (how ? how + " " : "") + (f.header ? `Header found on row ${f.header + 1}; the ${pl(f.header, "row")} above it skipped.` : ""); done(f.records); };
     const name = file.name.toLowerCase();
-    if (name.endsWith(".csv")) {
-      file.text().then((t) => done(parseCSV(t))).catch(fail);
+    if (name.endsWith(".csv") || name.endsWith(".txt")) {
+      file.arrayBuffer().then((buf) => {
+        let text;
+        try { text = new TextDecoder("utf-8", { fatal: true }).decode(buf); } catch (e) { text = new TextDecoder("windows-1252").decode(buf); }
+        text = text.replace(/^\uFEFF/, "");
+        const d = E.detectDelimiter(text);
+        take(E.parseDelimited(text, d), d === "," ? "" : `Columns separated by ${d === ";" ? "semicolons" : d === "\t" ? "tabs" : "'" + d + "'"}.`);
+      }).catch(fail);
     } else {
       // the standard template keeps the data on a sheet named "Data" (with Dictionary and Readme sheets beside it)
-      const go2 = () => file.arrayBuffer().then((buf) => { const wb = window.XLSX.read(buf, { type: "array" }); const sh = wb.SheetNames.includes("Data") ? "Data" : wb.SheetNames[0]; done(window.XLSX.utils.sheet_to_json(wb.Sheets[sh], { defval: "" })); }).catch(fail);
+      const go2 = () => file.arrayBuffer().then((buf) => {
+        const wb = window.XLSX.read(buf, { type: "array" }), sh = wb.SheetNames.includes("Data") ? "Data" : wb.SheetNames[0];
+        take(window.XLSX.utils.sheet_to_json(wb.Sheets[sh], { header: 1, defval: null, raw: true }), wb.SheetNames.length > 1 ? `Read sheet "${sh}".` : "");
+      }).catch(fail);
       if (window.XLSX) go2();
       else {
         const sc = el("script", { src: "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" });
@@ -769,21 +798,6 @@
         document.head.appendChild(sc);
       }
     }
-  }
-  function parseCSV(text) {
-    const rows = []; let row = [], f = "", q = false;
-    for (let i = 0; i < text.length; i++) {
-      const c = text[i];
-      if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; }
-      else if (c === '"') q = true;
-      else if (c === ",") { row.push(f); f = ""; }
-      else if (c === "\n" || c === "\r") { if (c === "\r" && text[i + 1] === "\n") i++; row.push(f); rows.push(row); row = []; f = ""; }
-      else f += c;
-    }
-    if (f !== "" || row.length) { row.push(f); rows.push(row); }
-    if (!rows.length) return [];
-    const head = rows.shift().map((h) => h.trim().replace(/^﻿/, ""));
-    return rows.filter((r) => r.some((v) => String(v).trim() !== "")).map((r) => Object.fromEntries(head.map((h, i) => [h, r[i] ?? ""])));
   }
 
   /* =====================================================================
@@ -891,7 +905,9 @@
         H.cards[cat] = { chart, desc, btn };
         grid.appendChild(c.root);
       });
-      H.out.replaceChildren(el("div", { class: "row-ctl", style: "margin-bottom:12px" }, fSelect("SOE", names, st.soe, (v) => { st.soe = v; this.render(); })), grid);
+      H.out.replaceChildren(el("div", { class: "row-ctl", style: "margin-bottom:12px" }, fSelect("SOE", names, st.soe, (v) => { st.soe = v; this.render(); })), grid,
+        legendRow([legendItem(LG.now, "Latest year"), legendItem(LG.hl, "Earlier years"), legendItem(LG.thrC, "Alert cutoff"), legendItem(LG.thrG, "Good cutoff"),
+          el("span", { class: "lt" }, "Same chart for any number of years; with more than 15 years only the latest point is marked. A gap means the ratio is n/a that year.")], ""));
     },
     buildCompare() {
       const st = S.kpi, H = this.H;
@@ -927,16 +943,24 @@
         const d = this.rowsK().filter((r) => r.Entity === st.soe).sort((a, b) => a.Year - b.Year);
         for (const cat in H.cards) {
           const k = st.trend[cat], { chart, desc, btn } = H.cards[cat];
-          const dd = d.filter((r) => ok(r[k]));
-          desc.textContent = SPEC[k].description;
+          const sp = SPEC[k], xs = d.map((r) => r.Year), vals = d.map((r) => r[k]);
+          desc.textContent = sp.description;
           if (d.length < 2) { chart.replaceChildren(el("p", { class: "kpi-desc" }, `Only one year of data for ${st.soe} — need at least two to plot a trend.`)); btn.replaceChildren(); continue; }
-          if (!dd.length) { chart.replaceChildren(el("p", { class: "kpi-desc" }, "No data for this ratio.")); btn.replaceChildren(); continue; }
-          if (dd.length >= LINE_CHART_MIN_YEARS) {
-            // long series (e.g. 20 years): a line reads better than a thicket of thin bars
-            lines(chart, dd.map((r) => r.Year), [{ vals: dd.map((r) => r[k]), cls: "ln", dot: "hl", label: SPEC[k].label }],
-              { h: 190, L: 46, R: 14, yFmt: kpiTick(k), tipTitle: (i) => `${st.soe} · ${dd[i].Year}`, tip: (i) => [[kpiFmt(k, dd[i][k]), SPEC[k].label], [STLABEL[RAG[E.classify(dd[i][k], k)[0]]] || "—", cutText(k)]] });
-          } else cols(chart, dd.map((r) => r.Year), dd.map((r) => r[k]), { hl: dd.length - 1, fmt: (v) => kpiFmt(k, v), tick: kpiTick(k), title: SPEC[k].label, h: 190 });
-          btn.replaceChildren(dataButtons(() => toCSV(["Entity", "Sector", "Year", k], dd.map((r) => [r.Entity, r.Sector, r.Year, r[k]])), `${st.soe}_${k}_trend.csv`));
+          if (!vals.some(ok)) { chart.replaceChildren(el("p", { class: "kpi-desc" }, "No data for this ratio.")); btn.replaceChildren(); continue; }
+          // one chart for any number of years: every year in the range on the x-axis (gaps where the ratio is n/a),
+          // the latest year highlighted and labelled, dashed lines at the alert and good cutoffs
+          lines(chart, xs, [{ vals, cls: "ln", dot: "hl", lastDot: "now", label: sp.label }], {
+            h: 200, L: 46, R: 58, yFmt: kpiTick(k),
+            hlines: [{ y: sp.red_cut, cls: "thr-crit", include: true }, { y: sp.green_cut, cls: "thr-good", include: true }],
+            tipTitle: (i) => `${st.soe} · ${xs[i]}`,
+            tip: (i) => {
+              if (!ok(vals[i])) { const why = kpiStatus(d[i], k).why; return [["n/a", why ? `suppressed: ${why}` : "not reported"]]; }
+              const s2 = RAG[E.classify(vals[i], k)[0]];
+              return [[kpiFmt(k, vals[i]), sp.label], [STLABEL[s2] || "—", cutText(k)]];
+            },
+            endLabel: { series: 0, fmt: (v) => kpiFmt(k, v) }, naMarks: true,
+          });
+          btn.replaceChildren(dataButtons(() => toCSV(["Entity", "Sector", "Year", k], d.map((r) => [r.Entity, r.Sector, r.Year, r[k]])), `${st.soe}_${k}_trend.csv`));
         }
       } else if (st.view === "compare") {
         const keys = this.avail;

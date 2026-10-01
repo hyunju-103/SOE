@@ -222,7 +222,7 @@ def _main():
     args = ap.parse_args()
 
     if args.input:
-        raw = pd.read_csv(args.input) if args.input.lower().endswith(".csv") else pd.read_excel(args.input)
+        raw = data_loader.load_uploaded_file(args.input)
         raw, _mapping = schema.standardize_columns(raw)
         check = data_loader.validate_schema(raw)
         if check["missing_required"]:

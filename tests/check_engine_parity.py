@@ -76,6 +76,10 @@ out.expo = Object.fromEntries(en.map(r => [r.Entity + "|" + r.Year, E.soeExposur
 out.efcRows = en.map(r => { const a = E.efcRow(r, 65, 0.8, "guaranteed_debt"), b = E.efcRow(r, 65, 0.6); return [a.EAD, a.EFC, a.EAD_source, b.EAD, b.EFC, b.EAD_source]; });
 out.match = inp.labels.map(l => E.matchColumn(l));
 out.std = E.standardizeColumns(inp.headers).report;
+out.num = inp.cells.map(c => E.parseNumber(c));
+out.year = inp.cells.map(c => E.parseYear(c));
+out.delim = inp.texts.map(t => E.detectDelimiter(t));
+out.frames = inp.texts.map(t => { const f = E.frameFromRows(E.parseDelimited(t, E.detectDelimiter(t))); return [f.header, f.records.length, Object.keys(f.records[0] || {})]; });
 out.q = inp.qtest.map(q => E.quantile(inp.qvals, q));
 process.stdout.write(JSON.stringify(out, (k, v) => (typeof v === "number" && !Number.isFinite(v) ? null : v)));
 """
@@ -112,6 +116,12 @@ def main():
               "Guaranteed debt", "Fuel costs", "Short-term borrowings", "fx_debt", "source_file", "audit_status", "Data quality flag",
               "Something else entirely", "Totl Assets", "Curent Liabilities", "Deprecation", "Sector ", "  UNITS", "Profit after tax", "NPAT"]
     headers = ["Entity", "Year", "Sector", "Revenue", "Revenues", "Net Income", "NPAT", "Profit after tax", "Totl Assets", "Total Assets", "Mystery"]
+    cells = ["1,234,567", "(1,234)", "35%", "1234,5", "1 234", "1'234", "\u22125", "-", "n/a", "N/A", "12abc", "0x10", "1_000", "1e3", " 42 ",
+             7, 3.5, None, "(12.5%)", "1,23", "+.5", "", "...", "FY2023", "2023/24", 2023.0, "2023", "1,234.56", "-0", "12.", "(3)", "5 %", "1.2.3"]
+    texts = ["Entity;Year;Sector;Revenues;Total Assets\nSOE A;2020;Energy;1234,5;99\nSOE B;2021;Transport;10;20\n",
+             "Ministry of Finance\nSource: annual reports\n\nEntity,Year,Sector,Revenues,Total Assets\nSOE A,2020,Energy,\"1,234\",99\n",
+             "entity\tfiscal_year\tsector\trevenue\ttotal_assets\nSOE A\t2020\tEnergy\t5\t6\n",
+             "a,b\n1,2\n"]
     keys = ["Entity", "Year", "X1", "X2", "X3", "X4", "Z_EM", "Zone", "Rating"] + list(config.KPI_THRESHOLDS)
     gre_cases = [(e, r, l, s, o) for e in ["SOE A", "SOE C", "SOE F", "SOE H"] for r, l in [("Critical", "Integral"), ("Important", "Strong"), ("Limited Importance", "Limited")]
                  for s, o in [("BB", "Stable"), ("BBB", "Negative"), ("B", "Positive")]]
@@ -120,7 +130,7 @@ def main():
     payload = {
         "engine": str(ROOT / "templates" / "engine.js"), "config": report.config_payload(), "rows": report.rows_payload(raw),
         "keys": keys, "scenarios": scenarios, "H": H, "gre": gre_cases, "mc": {"entity": "SOE F", "n": 5000, "corr": mc_corr},
-        "qvals": qvals, "qtest": qtest, "psd": psd_cases, "labels": labels, "headers": headers,
+        "qvals": qvals, "qtest": qtest, "psd": psd_cases, "labels": labels, "headers": headers, "cells": cells, "texts": texts,
     }
     res = subprocess.run([node, "-e", NODE_RUNNER], input=json.dumps(payload), capture_output=True, text=True, check=True)
     js = json.loads(res.stdout)
@@ -257,6 +267,20 @@ def main():
     if rep_df.to_dict("records") != js["std"]:
         fails.append(f"standardize_columns:\n  py={rep_df.to_dict('records')}\n  js={js['std']}")
     n_extra += len(labels) + 1 + len(psd_cases) + 4
+    # reading uploads: number and year parsing, delimiter and header-row detection
+    import csv, io
+    for c, jn, jy in zip(cells, js["num"], js["year"]):
+        pn, py = data_loader.parse_number(c), data_loader.parse_year(c)
+        if not close(None if pn != pn else pn, jn, 1e-15) or not close(None if py != py else py, jy, 1e-15):
+            fails.append(f"parse {c!r}: py=({pn}, {py}) js=({jn}, {jy})")
+    for t, jd, jf in zip(texts, js["delim"], js["frames"]):
+        d = data_loader.detect_delimiter(t)
+        rows = list(csv.reader(io.StringIO(t), delimiter=d))
+        fr = data_loader.frame_from_rows(rows)
+        exp = [schema.find_header_row(rows), len(fr), list(fr.columns)]
+        if d != jd or exp != jf:
+            fails.append(f"upload text {t[:30]!r}: py=({d!r}, {exp}) js=({jd!r}, {jf})")
+    n_extra += 2 * len(cells) + 2 * len(texts)
 
     n_checks = len(js["rows"]) * len(keys) + len(latest) * (5 + len(scenarios) * (2 * H + 3)) + len(gre_cases) + len(qtest) + 6 + n_extra
     if fails:

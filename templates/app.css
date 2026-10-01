@@ -271,6 +271,8 @@ g.row:hover .bar.neg { fill: var(--neg); filter: brightness(.9); }
 .band-outer { fill: var(--accent); opacity: .12; } .band-inner { fill: var(--accent); opacity: .22; }
 .ref-l { stroke: var(--heading); stroke-width: 1.5; }
 .thr-crit { stroke: var(--crit); stroke-width: 1.5; } .thr-warn { stroke: var(--warn-ink); stroke-width: 1.5; }
+.thr-good { stroke: var(--good); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.chart .thr-crit, .legend-row .thr-crit { stroke-dasharray: 5 4; }
 .act-band { fill: var(--accent); opacity: .45; }
 .xhair { stroke: var(--axis); stroke-width: 1; }
 .lad-cell { fill: var(--surface-2); stroke: var(--line); }

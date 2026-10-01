@@ -5,7 +5,9 @@ numeric fields. Missing optional (shock-module) columns are reported but do
 not block ingestion.
 """
 
+import csv
 import io
+import re
 
 import numpy as np
 import pandas as pd
@@ -26,17 +28,127 @@ OPTIONAL_NUMERIC_COLUMNS = [v["column"] for v in schema.VARIABLES
                             if v["kind"] in schema.NUMERIC_KINDS and v["column"] not in NUMERIC_COLUMNS]
 
 
+_NA_TOKENS = {"", "-", "--", "\u2014", "\u2013", "n/a", "na", "nan", "none", "null", "...", "\u2026"}
+_PLAIN_NUMBER = re.compile(r"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$")
+_THOUSANDS = re.compile(r"^[+-]?\d{1,3}(,\d{3})+(\.\d+)?$")
+_DECIMAL_COMMA = re.compile(r"^[+-]?\d+,\d+$")
+_YEAR = re.compile(r"(19|20)\d{2}")
+
+
+def parse_number(v) -> float:
+    """One cell to a float, reading numbers the way spreadsheets display
+    them: 1,234,567 (thousands commas), (1,234) (negative), 35% (0.35),
+    1234,5 (decimal comma), 1 234 or 1'234 (spaced thousands), the Unicode
+    minus sign. Blanks and markers such as -, n/a or ... become NaN, as does
+    anything else that is not a number. templates/engine.js parseNumber is
+    the same rule (checked by tests/check_engine_parity.py)."""
+    if v is None or isinstance(v, bool):
+        return float("nan")
+    if isinstance(v, (int, float, np.integer, np.floating)):
+        return float(v)
+    t = str(v).strip().replace("\u2212", "-")
+    for ch in ("\u00a0", "\u202f", " ", "'"):
+        t = t.replace(ch, "")
+    if t.lower() in _NA_TOKENS:
+        return float("nan")
+    neg = t.startswith("(") and t.endswith(")")
+    if neg:
+        t = t[1:-1]
+    pct = t.endswith("%")
+    if pct:
+        t = t[:-1]
+    if _THOUSANDS.match(t):
+        t = t.replace(",", "")
+    elif _DECIMAL_COMMA.match(t):
+        t = t.replace(",", ".")
+    if not _PLAIN_NUMBER.match(t):
+        return float("nan")
+    x = float(t)
+    if pct:
+        x /= 100
+    return -x if neg else x
+
+
+def parse_year(v) -> float:
+    """A year cell to a number: 2023, 2023.0, "2023", "FY2023" and
+    "2023/24" all give 2023 (the first four-digit year in the text)."""
+    x = parse_number(v)
+    if x == x and abs(x) != float("inf"):
+        return float(int(x))
+    m = _YEAR.search(str(v)) if v is not None else None
+    return float(m.group(0)) if m else float("nan")
+
+
+def _count_outside_quotes(line: str, d: str) -> int:
+    n, q = 0, False
+    for ch in line:
+        if ch == '"':
+            q = not q
+        elif ch == d and not q:
+            n += 1
+    return n
+
+
+def detect_delimiter(text: str) -> str:
+    """Comma, semicolon, tab or pipe: the one with the highest median count
+    per line over the first 20 non-empty lines (ties go to the comma)."""
+    lines = [ln for ln in text.splitlines() if ln.strip()][:20]
+    best, best_score = ",", 0.0
+    for d in [",", ";", "\t", "|"]:
+        if not lines:
+            break
+        counts = sorted(_count_outside_quotes(ln, d) for ln in lines)
+        score = counts[len(counts) // 2]
+        if score > best_score:
+            best, best_score = d, score
+    return best
+
+
+def frame_from_rows(rows) -> pd.DataFrame:
+    """Rows read without headers (lists of cells) to a DataFrame, taking the
+    header from the row schema.find_header_row picks; empty rows dropped."""
+    rows = [list(r) for r in rows]
+    if not rows:
+        return pd.DataFrame()
+    h = schema.find_header_row(rows)
+    width = max(len(r) for r in rows)
+    head = []
+    for i in range(width):
+        c = rows[h][i] if i < len(rows[h]) else None
+        c = "" if c is None or (isinstance(c, float) and c != c) else str(c).strip()
+        head.append(c or f"Unnamed: {i}")
+    body = [r + [None] * (width - len(r)) for r in rows[h + 1:]]
+    body = [r for r in body if any(not (c is None or (isinstance(c, float) and c != c) or (isinstance(c, str) and not c.strip())) for c in r)]
+    return pd.DataFrame(body, columns=head)
+
+
 def load_uploaded_file(uploaded_file) -> pd.DataFrame:
-    """Read an uploaded Streamlit file object (xlsx or csv) into a DataFrame."""
+    """Read an uploaded file object (xlsx or csv), or a path, into a DataFrame. CSV: the
+    delimiter is detected (comma, semicolon, tab, pipe) and UTF-8 or Windows
+    encodings are accepted. Excel: the "Data" sheet of the standard template
+    if present, else the first sheet. Title or note rows above the header are
+    skipped (schema.find_header_row)."""
+    if isinstance(uploaded_file, (str, bytes)) or hasattr(uploaded_file, "__fspath__"):  # a path on disk
+        with open(uploaded_file, "rb") as fh:
+            data = io.BytesIO(fh.read())
+        data.name = str(uploaded_file)
+        uploaded_file = data
     name = uploaded_file.name.lower()
-    if name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
+    if name.endswith(".csv") or name.endswith(".txt"):
+        raw = uploaded_file.read()
+        if isinstance(raw, str):
+            text = raw
+        else:
+            try:
+                text = raw.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                text = raw.decode("cp1252", errors="replace")
+        rows = list(csv.reader(io.StringIO(text), delimiter=detect_delimiter(text)))
     else:
-        # the standard template keeps the data on a sheet called "Data"
         xls = pd.ExcelFile(uploaded_file)
         sheet = "Data" if "Data" in xls.sheet_names else xls.sheet_names[0]
-        df = pd.read_excel(xls, sheet_name=sheet)
-    return df
+        rows = pd.read_excel(xls, sheet_name=sheet, header=None).values.tolist()
+    return frame_from_rows(rows)
 
 
 def load_and_standardize(uploaded_file):
@@ -82,7 +194,12 @@ def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     for col in NUMERIC_COLUMNS + OPTIONAL_NUMERIC_COLUMNS:
         if col in out.columns:
-            out[col] = pd.to_numeric(out[col], errors="coerce")
+            if col == "Year":
+                out[col] = out[col].map(parse_year).astype(float)
+            elif pd.api.types.is_numeric_dtype(out[col]):
+                out[col] = pd.to_numeric(out[col], errors="coerce")
+            else:  # text cells: read spreadsheet-formatted numbers (parse_number)
+                out[col] = out[col].map(parse_number).astype(float)
     return out
 
 

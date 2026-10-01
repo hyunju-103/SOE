@@ -132,6 +132,29 @@ file uses its own seeded random generator, so individual draws differ from
 numpy's, but percentiles agree within sampling error (checked by the parity
 script).
 
+## Uploading data
+
+CSV or Excel (.xlsx/.xls), one row per SOE-year. The same reading rules run
+in the browser (`templates/engine.js`) and in Python (`data_loader.py`),
+checked against each other by the parity script:
+
+- Column names are matched to the standard schema: exact name, known
+  synonym, or close spelling; the mapping is shown for review.
+- Excel: the sheet named "Data" (the template's) or else the first sheet.
+  Title or note rows above the table are skipped — the header is the row
+  among the first 15 that matches the most schema columns.
+- CSV: comma, semicolon, tab or pipe separators are detected; UTF-8 or
+  Windows (cp1252) text.
+- Numbers as spreadsheets display them are read: `1,234,567`, `(1,234)` for
+  negatives, `35%`, `1234,5` (decimal comma), `1 234`; `-`, `n/a` and blanks
+  are missing. `1,234` is read as one thousand two hundred thirty-four.
+- Years such as `FY2023` or `2023/24` are read as 2023.
+- Uploaded files are read in the viewer's browser and are not stored: reload
+  the page and it starts again from the demo data.
+
+PDF statements are not read here; they go through the extraction step into
+the standard Excel template first.
+
 ## Where to make changes later
 
 Almost everything tunable lives in **`config.py`**:

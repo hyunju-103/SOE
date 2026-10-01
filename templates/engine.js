@@ -521,12 +521,86 @@
       return { rename, report };
     }
 
+    /** schema.find_header_row: skip title or note rows above the table */
+    function findHeaderRow(rows) {
+      let best = 0, bestN = (SCH.header_min_matches ?? 3) - 1;
+      rows.slice(0, SCH.header_scan_rows ?? 15).forEach((row, i) => {
+        const cols = new Set();
+        (row || []).forEach((cell) => { if (typeof cell === "string" && cell.trim()) { const c = matchColumn(cell)[0]; if (c) cols.add(c); } });
+        if (cols.size > bestN) { best = i; bestN = cols.size; }
+      });
+      return best;
+    }
+
+    /* ---------------- data_loader.py (reading uploads) ---------------- */
+    const NA_TOKENS = new Set(["", "-", "--", "—", "–", "n/a", "na", "nan", "none", "null", "...", "…"]);
+    const PLAIN = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/, THOUS = /^[+-]?\d{1,3}(,\d{3})+(\.\d+)?$/, DEC_COMMA = /^[+-]?\d+,\d+$/;
+    /** parse_number: spreadsheet-formatted numbers — 1,234,567 · (1,234) · 35% · 1234,5 · 1 234 · 1'234 · Unicode minus */
+    function parseNumber(v) {
+      if (v === null || v === undefined || typeof v === "boolean") return NaN;
+      if (typeof v === "number") return v;
+      let t = String(v).trim().replace(/−/g, "-").replace(/[   ']/g, "");
+      if (NA_TOKENS.has(t.toLowerCase())) return NaN;
+      const neg = t.startsWith("(") && t.endsWith(")");
+      if (neg) t = t.slice(1, -1);
+      const pct = t.endsWith("%");
+      if (pct) t = t.slice(0, -1);
+      if (THOUS.test(t)) t = t.replace(/,/g, "");
+      else if (DEC_COMMA.test(t)) t = t.replace(",", ".");
+      if (!PLAIN.test(t)) return NaN;
+      let x = Number(t);
+      if (pct) x /= 100;
+      return neg ? -x : x;
+    }
+    /** parse_year: 2023, "2023", "FY2023", "2023/24" → 2023 */
+    function parseYear(v) {
+      const x = parseNumber(v);
+      if (Number.isFinite(x)) return Math.trunc(x);
+      const m = v === null || v === undefined ? null : String(v).match(/(19|20)\d{2}/);
+      return m ? Number(m[0]) : NaN;
+    }
+    function countOutsideQuotes(line, d) { let n = 0, q = false; for (const ch of line) { if (ch === '"') q = !q; else if (ch === d && !q) n++; } return n; }
+    /** detect_delimiter: comma, semicolon, tab or pipe — highest median count per line over the first 20 lines */
+    function detectDelimiter(text) {
+      const lines = String(text).split(/\r\n|\r|\n/).filter((l) => l.trim()).slice(0, 20);
+      let best = ",", bestScore = 0;
+      for (const d of [",", ";", "\t", "|"]) {
+        if (!lines.length) break;
+        const c = lines.map((l) => countOutsideQuotes(l, d)).sort((a, b) => a - b), sc = c[Math.floor(c.length / 2)];
+        if (sc > bestScore) { best = d; bestScore = sc; }
+      }
+      return best;
+    }
+    /** delimited text → rows of cells (double-quote quoting, "" escapes) */
+    function parseDelimited(text, d) {
+      const rows = []; let row = [], f = "", q = false;
+      for (let i = 0; i < text.length; i++) {
+        const c = text[i];
+        if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; }
+        else if (c === '"') q = true;
+        else if (c === d) { row.push(f); f = ""; }
+        else if (c === "\n" || c === "\r") { if (c === "\r" && text[i + 1] === "\n") i++; row.push(f); rows.push(row); row = []; f = ""; }
+        else f += c;
+      }
+      if (f !== "" || row.length) { row.push(f); rows.push(row); }
+      return rows;
+    }
+    /** frame_from_rows: header from findHeaderRow, one object per non-empty row below it */
+    function frameFromRows(rows) {
+      if (!rows.length) return { records: [], header: 0 };
+      const h = findHeaderRow(rows), width = Math.max(...rows.map((r) => r.length));
+      const head = Array.from({ length: width }, (_, i) => { const c = rows[h][i]; const t = c === null || c === undefined ? "" : String(c).trim(); return t || `Unnamed: ${i}`; });
+      const empty = (c) => c === null || c === undefined || (typeof c === "number" && Number.isNaN(c)) || (typeof c === "string" && !c.trim());
+      const records = rows.slice(h + 1).filter((r) => r.some((c) => !empty(c))).map((r) => Object.fromEntries(head.map((k, i) => [k, r[i] ?? ""])));
+      return { records, header: h };
+    }
+
     return {
       isNum, div, classifyZone, zRating, enrich, enrichRow, availableKpis, classify, pdByRating, worstPdInZone, efcRow,
       recoveryScenarios, revenueVolatility, ratingIndex, notchChange, latestPerEntity, runScenario, costPath, kpiImpact,
       gdpPath, describeShocks, monteCarlo, quantile, percentilePath, singleNarrative, crossNarrative, zTrendSummary,
       zoneSummary, gre, ZCOMP, K, soeExposures, symEig, mcFactor, MC_VARIABLES, normalizeLabel, seqRatio, matchColumn,
-      standardizeColumns, BY_COLUMN,
+      standardizeColumns, BY_COLUMN, findHeaderRow, parseNumber, parseYear, detectDelimiter, parseDelimited, frameFromRows,
     };
   }
 
