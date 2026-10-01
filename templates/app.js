@@ -232,11 +232,17 @@
     return el("div", { class: "page-head" }, el("div", {}, el("div", { class: "eyebrow" }, eyebrow), el("h2", {}, title), el("p", {}, text)), tools || null);
   }
   function tile(label, status, statusLabel, value, small, sub) {
-    return el("div", { class: "card tile" },
+    // the box takes a light, see-through wash of its status colour (neutral blue when it has no status)
+    return el("div", { class: "card tile t-" + (status && status !== "none" ? status : "neutral") },
       el("div", { class: "tile-top" }, el("span", { class: "tile-label" }, label), status ? stChip(status, statusLabel) : null),
       el("div", { class: "tile-value" }, value, small ? el("small", {}, small) : null),
       el("div", { class: "tile-sub" }, sub || ""));
   }
+  /** the row of key figures at the top of every tab (filled by each page's render) */
+  const statStrip = () => el("div", { class: "statstrip", role: "region", "aria-label": "Key figures" });
+  const median = (a) => E.quantile(a.filter(ok), 0.5);
+  const cntChip = (n, bad = "alert") => (n ? [bad, STLABEL[bad]] : ["ok", STLABEL.ok]);
+  function countTile(label, n, of, sub, bad = "alert") { const [k, l] = cntChip(n, bad); return tile(label, k, l, String(n), `of ${of}`, sub); }
   function nameCell(name, sector) { return el("td", { class: "name" }, el("span", { class: "nm" }, name), el("span", { class: "sec" }, sector)); }
   function statusCell(k, value, sub, cls = "") {
     return el("td", { class: (k || "na") + " " + cls }, el("span", { class: "cell" }, el("span", { class: "v" }, GLYPH[k] ? el("i", { "aria-hidden": "true" }, GLYPH[k]) : null, value), sub ? el("span", { class: "d" }, sub) : null));
@@ -700,9 +706,10 @@
     build(root) {
       const H = {};
       this.H = H;
-      H.hero = el("div", { class: "card s5 hero" });
-      H.tiles = el("div", { class: "s7 tiles" });
-      H.upload = el("div", { class: "card top upload-card", id: "uploadCard" });
+      H.hero = el("div", { class: "card hero compact" });
+      H.tiles = el("div", { class: "tiles" });
+      H.upload = el("div", { class: "card top upload-card stacked", id: "uploadCard" });
+      H.more = el("div", { class: "card upl-more-card" });
       H.dq = card("Data quality and provenance", "Where the numbers come from, as far as the file says", null, "top");
       H.about = card("How it works", null, null);
       const mods = el("div", { class: "modules" }, MODULES.map(([name, status, k, text]) => el("div", { class: "module" + (k === "ok" ? " on" : "") },
@@ -710,9 +717,8 @@
       root.replaceChildren(
         pageHead("SOE FISCAL RISK TOOL", "SOE Fiscal Risk Dashboard",
           "A layered framework for state-owned enterprises: financial diagnostics (KPI Dashboard), distress signal (Altman Z-EM), fiscal exposure to the sovereign (Expected Fiscal Cost), dynamic shock simulation (Shock Scenarios), government support, trigger rules (Early Warning), and a five-section Report."),
-        H.upload,
-        el("h3", { class: "sec-label" }, "Portfolio overview"),
-        el("div", { class: "grid" }, H.hero, H.tiles),
+        el("div", { class: "grid home-top" }, el("div", { class: "s6" }, H.upload), el("div", { class: "s6 stack" }, H.hero, H.tiles)),
+        H.more,
         el("h3", { class: "sec-label" }, "Where this tool sits in the SOE fiscal-risk toolkit"), mods,
         el("div", { class: "grid", style: "margin-top:16px" }, el("div", { class: "s7" }, H.dq.root), el("div", { class: "s5" }, H.about.root)),
       );
@@ -748,9 +754,9 @@
         el("div", { class: "lbl", style: "margin-top:12px" }, "Standard template"),
         el("div", { class: "btn-row" }, dataButtons(templateCSV, "soe_tool_template.csv", "template"), dataButtons(dictionaryCSV, "soe_variable_dictionary.csv", "dictionary")));
       const note = S.uploadNote ? el("div", { class: "alert-box ok" }, S.uploadNote) : null;
-      // the wide sections (mapping table, columns, preview) run under both columns, full width
-      put(box, el("div", { class: "upl-grid" }, el("div", { class: "upl-main" }, el("h3", {}, "Load data"), dz, note, msg), side),
-        el("div", { class: "upl-more" }, S.mapping ? mappingDetails(S.mapping) : null, ...this.dataDetails()));
+      put(box, el("div", { class: "upl-grid" }, el("div", { class: "upl-main" }, el("h3", {}, "Load data"), dz, note, msg), side));
+      // the wide sections (column mapping, required columns, preview) run full width right under the top row
+      put(this.H.more, S.mapping ? mappingDetails(S.mapping) : null, ...this.dataDetails());
     },
     /** "Required and optional columns" and "Data preview", collapsed, under the upload box */
     dataDetails() {
@@ -933,7 +939,8 @@
         el("div", {}, el("b", {}, "Thresholds. "), "Illustrative IMF SOE Health Check Tool-style red/amber/green cuts — provisional starting points, not calibrated to a specific country sample."),
         el("div", {}, el("b", {}, "Suppressed ratios. "), "ROE, Debt/Equity, Debt/EBITDA, Depreciation/EBITDA and the effective tax rate show n/a when equity, EBITDA or EBIT is negative — the ratio's sign flips and would otherwise read as good. The scorecard counts these as alerts, as the guidance note recommends."));
       H.out = el("div");
-      root.replaceChildren(head, el("div", { class: "card", style: "margin-bottom:16px" }, tools), H.out, foot);
+      H.strip = statStrip();
+      root.replaceChildren(head, H.strip, el("div", { class: "card", style: "margin-bottom:16px" }, tools), H.out, foot);
       if (!avail.length) { H.out.replaceChildren(el("div", { class: "alert-box warn" }, "None of the KPI input fields were found in the data.")); return; }
       if (st.view === "trend") this.buildTrend();
       else if (st.view === "compare") this.buildCompare();
@@ -985,9 +992,27 @@
       c.body.append(H.table, H.more, H.legend, H.btn);
       H.out.replaceChildren(c.root);
     },
+    renderStrip() {
+      const av = this.avail, latest = latestOf(this.rowsK()), n = latest.length;
+      const many = latest.filter((r) => av.filter((k) => kpiStatus(r, k).st === "alert").length >= Math.ceil(av.length / 2)).length;
+      const medTile = (k, label) => {
+        if (!av.includes(k)) return null;
+        const vals = latest.map((r) => r[k]).filter(ok), v = median(vals), s2 = RAG[E.classify(v, k)[0]] || null;
+        const na = n - vals.length;
+        return tile(label, s2, s2 ? STLABEL[s2] : null, kpiFmt(k, v), "", `median of ${pl(vals.length, "SOE")}${na ? ` (${na} n/a)` : ""} · ${cutText(k)}`);
+      };
+      const g = av.includes("grants_to_revenue") ? latest.filter((r) => ok(r.grants_to_revenue) && r.grants_to_revenue > SPEC.grants_to_revenue.red_cut).length : null;
+      put(this.H.strip,
+        countTile("SOEs with most KPIs in alert", many, n, `half or more of the ${av.length} ratios in alert · latest year`),
+        medTile("operating_margin", "Median operating margin"),
+        medTile("current_ratio", "Median current ratio"),
+        medTile("debt_to_ebitda", "Median debt / EBITDA"),
+        g === null ? null : countTile("Grant-dependent SOEs", g, n, `grants above ${fmt(SPEC.grants_to_revenue.red_cut * 100, 0)}% of revenue`, "watch"));
+    },
     render() {
       const st = S.kpi, H = this.H;
       if (!this.avail || !this.avail.length) return;
+      this.renderStrip();
       if (st.view === "trend") {
         const d = this.rowsK().filter((r) => r.Entity === st.soe).sort((a, b) => a.Year - b.Year);
         for (const cat in H.cards) {
@@ -1057,7 +1082,8 @@
       H.out = el("div");
       const c = CFG.ZEM_COEFFICIENTS;
       const foot = el("div", { class: "foot" }, el("div", {}, el("b", {}, "Z-EM score. "), `Z = ${c.X1}·X1 + ${c.X2}·X2 + ${c.X3}·X3 + ${c.X4}·X4${CFG.ZEM_CONSTANT ? " + " + CFG.ZEM_CONSTANT : ""} (no constant — Eidelman convention). Z ≤ ${CFG.Z_DISTRESS_CUTOFF} distress, ${CFG.Z_DISTRESS_CUTOFF}–${CFG.Z_SAFE_CUTOFF} grey zone, > ${CFG.Z_SAFE_CUTOFF} safe. The rating is an indicative cohort mapping for reference only. For SOEs with large government transfers the unadjusted score is more likely to overstate than understate health.`));
-      root.replaceChildren(head, el("div", { class: "card", style: "margin-bottom:16px" }, el("div", { class: "row-ctl" }, el("div", { class: "fld" }, el("span", { class: "lbl" }, "View"), seg([["components", "Components for one SOE"], ["portfolio", "Portfolio view"]], st.view, (v) => { st.view = v; rebuild(); })))), H.out, foot);
+      H.strip = statStrip();
+      root.replaceChildren(head, H.strip, el("div", { class: "card", style: "margin-bottom:16px" }, el("div", { class: "row-ctl" }, el("div", { class: "fld" }, el("span", { class: "lbl" }, "View"), seg([["components", "Components for one SOE"], ["portfolio", "Portfolio view"]], st.view, (v) => { st.view = v; rebuild(); })))), H.out, foot);
       if (st.view === "components") this.buildComponents(); else this.buildPortfolio();
     },
     buildComponents() {
@@ -1089,8 +1115,19 @@
       H.out.replaceChildren(el("div", { style: "margin-bottom:8px" }, periodControls(st, () => this.render())), H.label,
         el("div", { class: "grid" }, el("div", { class: "s7" }, H.bench.root), el("div", { class: "s5" }, H.dist.root), el("div", { class: "s12" }, H.drv.root)));
     },
+    renderStrip() {
+      const rows = latestOf(F()), n = rows.length, zc = zoneCounts(rows), mz = median(rows.map((r) => r.Z_EM)), mzone = E.classifyZone(mz);
+      const fallers = rows.filter((r) => { const nc = E.notchChange(S.en, r.Entity)[2]; return nc !== null && nc <= -CFG.DYNAMIC_CAP_TRIGGER_NOTCHES; }).length;
+      put(this.H.strip,
+        tile("Distress zone", zc.Distress ? "alert" : "ok", zc.Distress ? "Alert" : "Good", String(zc.Distress), `of ${n}`, `Z″ ≤ ${CFG.Z_DISTRESS_CUTOFF} · latest year`),
+        tile("Grey zone", zc.Grey ? "watch" : "ok", zc.Grey ? "Watch" : "Good", String(zc.Grey), `of ${n}`, `${CFG.Z_DISTRESS_CUTOFF} < Z″ ≤ ${CFG.Z_SAFE_CUTOFF}`),
+        tile("Safe zone", "ok", "Safe", String(zc.Safe), `of ${n}`, `Z″ > ${CFG.Z_SAFE_CUTOFF}`),
+        tile("Median Z″", zk(mzone), ZLABEL[zk(mzone)], fmt(mz, 2), "", `indicative rating ${E.zRating(mz)}`),
+        countTile(`Rating down ${CFG.DYNAMIC_CAP_TRIGGER_NOTCHES}+ notches`, fallers, n, "first to latest year", "watch"));
+    },
     render() {
       const st = S.alt, H = this.H;
+      this.renderStrip();
       if (st.view === "components") {
         const full = F().filter((r) => r.Entity === st.soe).sort((a, b) => a.Year - b.Year);
         const d = full.filter((r) => r.Year >= st.from && r.Year <= st.to);
@@ -1184,7 +1221,7 @@
             : "Proxy: a share of total liabilities (100% was the original assumption).")),
         fSlider(st.basis === "guaranteed_debt" ? "Fallback: share of total liabilities" : "EAD: share of total liabilities", { min: 0.5, max: 1, step: 0.1, value: st.ead, fmt: pct0, info: "60% and 80% are the sensitivity cases agreed for the proxy; 100% counts every liability." }, (v) => { st.ead = v; this.render(); }),
         gdpField(() => this.render())));
-      H.tiles = el("div", { class: "grid3 sm" });
+      H.strip = statStrip();
       H.bar = card("EFC by SOE", null, null); H.bar.body.append(el("div", { class: "chart" }), el("div", { style: "margin-top:8px" }));
       if (!names.includes(st.sens)) st.sens = names[0];
       H.sens = card("Government backstop sensitivity — one SOE", null, fSelect(null, names, st.sens, (v) => { st.sens = v; this.render(); }));
@@ -1197,7 +1234,8 @@
       H.table = card("EFC results", null, null);
       root.replaceChildren(
         pageHead("FISCAL EXPOSURE", "Expected Fiscal Cost", "EFC = PD × EAD × LGD — PD from each SOE's own Z-EM-derived rating (20-band cohort table), EAD a share of total liabilities or the reported guaranteed debt, LGD set by you. A triage-level estimate, not a budget forecast."),
-        el("div", { class: "grid" }, el("div", { class: "s4 sticky-panel" }, settings.root), el("div", { class: "s8 stack" }, H.tiles, H.bar.root)),
+        H.strip,
+        el("div", { class: "grid" }, el("div", { class: "s4 sticky-panel" }, settings.root), el("div", { class: "s8 stack" }, H.bar.root)),
         el("div", { class: "grid", style: "margin-top:16px" }, el("div", { class: "s7" }, H.sens.root), el("div", { class: "s5" }, ref.root), el("div", { class: "s12" }, H.table.root)),
         el("div", { class: "foot" }, el("div", {}, el("b", {}, "Triage-level estimate. "), "PD is each SOE's own one-year PD from the rating cohort table — a placeholder pending probit-estimated probabilities. EAD is a proxy (a share of total liabilities) unless the data report government-guaranteed debt and that basis is selected; the table's EAD column says which each SOE used.")));
     },
@@ -1207,10 +1245,16 @@
       const res = view.map((r) => { const lgd = st.mode === "single" ? st.lgd : st.per[r.Entity] ?? st.lgd; return Object.assign({ r, lgd }, E.efcRow(r, lgd, st.ead, st.basis)); }).sort((a, b) => (b.EFC || 0) - (a.EFC || 0));
       const eadShort = (x) => (x.EAD_source.startsWith("Observed") ? "guaranteed debt" : `${pct0(st.ead)} of liabilities`);
       const total = sum(res.map((x) => x.EFC)), g = S.gdp;
-      H.tiles.replaceChildren(
-        tile(`Aggregate EFC${CUR ? " (" + CUR + ")" : ""}`, null, null, money(total), "", g ? `${pctS(total / g)} of GDP · ${st.year}` : `${st.year} · ${CFG.GLOSSARY.EFC.split(".")[0]}.`),
-        tile("SOEs in Distress zone", res.some((x) => x.r.Zone === "Distress") ? "alert" : "ok", null, String(res.filter((x) => x.r.Zone === "Distress").length), `of ${res.length}`, `Z-EM ≤ ${CFG.Z_DISTRESS_CUTOFF}`),
-        tile("SOEs assessed", null, null, String(res.length), "", `LGD ${st.mode === "single" ? st.lgd + "% for all" : "set per SOE"} · EAD ${st.basis === "guaranteed_debt" ? `guaranteed debt for ${res.filter((x) => x.EAD_source.startsWith("Observed")).length}, else ${pct0(st.ead)} of liabilities` : pct0(st.ead) + " of liabilities"}`));
+      const top = res[0], top3 = sum(res.slice(0, 3).map((x) => x.EFC));
+      let gst = null;
+      if (g) { const gg = total / g; gst = gg >= CFG.REPORT_EFC_GDP_ALERT ? "alert" : gg >= CFG.REPORT_EFC_GDP_WATCH ? "watch" : "ok"; }
+      const eadTxt = st.basis === "guaranteed_debt" ? `EAD guaranteed debt for ${res.filter((x) => x.EAD_source.startsWith("Observed")).length}, else ${pct0(st.ead)} of liabilities` : `EAD ${pct0(st.ead)} of liabilities`;
+      put(H.strip,
+        tile("Aggregate EFC", null, null, money(total), CUR, `${st.year} · ${pl(res.length, "SOE")} · LGD ${st.mode === "single" ? st.lgd + "%" : "per SOE"} · ${eadTxt}`),
+        tile("EFC / GDP", gst, gst ? STLABEL[gst] : null, g ? pctS(total / g) : "—", "", g ? `watch from ${pct(CFG.REPORT_EFC_GDP_WATCH, 1)}, alert from ${pct(CFG.REPORT_EFC_GDP_ALERT, 1)} (illustrative)` : "Enter GDP under Settings"),
+        top ? tile("Largest exposure", zk(top.r.Zone), ZLABEL[zk(top.r.Zone)], money(top.EFC), CUR, `${top.r.Entity} · ${pct(total ? top.EFC / total : NaN, 0)} of the total · PD ${pctAuto(top.PD)}`) : null,
+        res.length > 3 ? tile("Top-3 concentration", null, null, pct(total ? top3 / total : NaN, 0), "", `of EFC in ${res.slice(0, 3).map((x) => x.r.Entity).join(", ")}`) : null,
+        countTile("SOEs in distress", res.filter((x) => x.r.Zone === "Distress").length, res.length, `Z-EM ≤ ${CFG.Z_DISTRESS_CUTOFF}, PD ${pctAuto(E.pdByRating("D"))} at rating D`));
       H.bar.head.querySelector(".sub") || H.bar.head.firstChild.appendChild(el("p", { class: "sub" }));
       H.bar.head.querySelector(".sub").textContent = `${st.year} · ${g ? "labels show share of GDP" : "labels show share of portfolio EFC"}` + (res.length > LIMIT ? ` · ${st.all ? "all " + res.length + " SOEs" : `the ${LIMIT} largest of ${res.length}`}` : "");
       hbars(H.bar.body.firstChild, clipRows(res, st.all).map((x) => ({
@@ -1336,9 +1380,11 @@
           fSlider("Nominal GDP growth", { min: -0.05, max: 0.15, step: 0.005, value: S.growth, fmt: (v) => fmt(v * 100, 1) + "%/yr" }, (v) => { S.growth = v; this.schedule(); })));
       H.view = seg([["single", "Single scenario"], ["mc", "Distribution (Monte Carlo)"], ["all", "All SOEs"]], st.view, (v) => { st.view = v; rebuild(); });
       H.desc = el("p", { class: "note", style: "margin:8px 0 0" });
+      H.strip = statStrip();
       H.out = el("div", { class: "stack", style: "margin-top:16px" });
       root.replaceChildren(
         pageHead("DYNAMIC SIMULATION", "Shock Scenarios & Fiscal Risk", "Shocks hit balance-sheet and income-statement lines directly and compound over a multi-year horizon. Run the no-shock baseline first, then a shock; every stressed path is compared with the SOE's own no-shock path."),
+        H.strip,
         el("div", { class: "grid" }, el("div", { class: "s4 sticky-panel" }, panel.root), el("div", { class: "s8" }, el("div", { class: "card" }, el("div", { class: "row-ctl" }, el("div", { class: "fld" }, el("span", { class: "lbl" }, "View"), H.view)), H.desc), H.out)),
         el("div", { class: "foot" },
           el("div", {}, el("b", {}, "Simplifications. "), "Tax expense and current liabilities are held flat; net income carries the reported figure plus the shock's effect on EBIT and interest; losses are assumed debt-financed; operating expense and revenue are held at base-year values."),
@@ -1356,13 +1402,12 @@
     params(mags) { const st = S.sh, b = this.base(); return paramsFor(b, mags || st.mags, st.expo, st.D, st.H); },
     buildSingle() {
       const H = this.H;
-      H.tiles = el("div", { class: "grid4 sm" });
       H.subsidy = el("div");
       H.z = card("Z-EM trajectory", "Stressed path against the no-shock path for the same SOE"); H.z.body.append(legendRow([legendItem(LG.str, "Stressed"), legendItem(LG.base, "No shock"), legendItem(LG.act, "Shock active"), legendItem(LG.grey, "Grey zone"), legendItem(LG.dist, "Distress")]), el("div", { class: "chart" }));
       H.e = card("Expected fiscal cost path", null); H.e.body.append(legendRow([legendItem(LG.str, "Stressed"), legendItem(LG.base, "No shock")]), el("div", { class: "chart" }));
       H.imp = card("KPI impact (base → final year)", "Change in each Z-EM component; weighted = change × coefficient"); H.tor = card("Tornado — driver of Z-EM change", "Weighted contribution to the change in Z″, base year to final year"); H.tor.body.append(el("div", { class: "chart" }));
       H.proj = card("Full projection", null);
-      H.out.replaceChildren(H.subsidy, H.tiles, el("div", { class: "grid" }, el("div", { class: "s6" }, H.z.root), el("div", { class: "s6" }, H.e.root)), el("div", { class: "grid" }, el("div", { class: "s5" }, H.tor.root), el("div", { class: "s7" }, H.imp.root)), H.proj.root);
+      H.out.replaceChildren(H.subsidy, el("div", { class: "grid" }, el("div", { class: "s6" }, H.z.root), el("div", { class: "s6" }, H.e.root)), el("div", { class: "grid" }, el("div", { class: "s5" }, H.tor.root), el("div", { class: "s7" }, H.imp.root)), H.proj.root);
     },
     buildMC() {
       const st = S.sh.mc, H = this.H;
@@ -1387,13 +1432,12 @@
       H.mcnote = el("p", { class: "note" });
       H.mcerr = el("div");
       const c = card("Monte Carlo settings", null, null); c.body.append(set, el("div", { class: "lbl", style: "margin:12px 0 6px" }, "Correlations between the drawn shocks"), corrBox, H.mcnote, H.mcerr);
-      H.tiles = el("div", { class: "grid4 sm" });
       H.zh = card("Z-EM distribution (final year)"); H.zh.body.append(legendRow([legendItem(LG.thrC, `Distress (${CFG.Z_DISTRESS_CUTOFF})`), legendItem(LG.thrW, `Safe (${CFG.Z_SAFE_CUTOFF})`)]), el("div", { class: "chart" }));
       H.zd = card("Zone distribution across simulations"); H.zd.body.append(el("div"));
       H.eh = card("Expected fiscal cost distribution (final year)"); H.eh.body.append(el("div", { class: "chart" }));
       H.fan = card("Expected fiscal cost — percentile path"); H.fan.body.append(legendRow([legendItem(LG.med, "Median"), legendItem(LG.inner, "25th–75th"), legendItem(LG.outer, "5th–95th")]), el("div", { class: "chart" }));
       H.pt = card("Percentile summary (final year)");
-      H.mcres = el("div", { class: "stack" }, H.tiles, el("div", { class: "grid" }, el("div", { class: "s7" }, H.zh.root), el("div", { class: "s5" }, H.zd.root)), H.eh.root, H.fan.root, H.pt.root);
+      H.mcres = el("div", { class: "stack" }, el("div", { class: "grid" }, el("div", { class: "s7" }, H.zh.root), el("div", { class: "s5" }, H.zd.root)), H.eh.root, H.fan.root, H.pt.root);
       H.out.replaceChildren(c.root, H.mcres);
     },
     buildAll() {
@@ -1419,11 +1463,12 @@
       put(H.subsidy, subT ? el("div", { class: "alert-box warn", style: "margin-bottom:16px" }, el("span", {}, el("b", {}, `Direct fuel subsidy: ${money(subT, true)} over ${pl(Math.min(st.D, st.H), "year")}`),
         subT > 0 ? ` — a budget outlay on top of the expected fiscal cost, because the government absorbs ${pct0(p.fuel_subsidy_share)} of the fuel-cost change (Case C).` : ` — negative: cheaper fuel lowers the ${pct0(p.fuel_subsidy_share)} share the government covers, a budget saving.`,
         gs ? ` That is ${pctS(subT / gs[1])} of year-1 GDP.` : "")) : null);
-      H.tiles.replaceChildren(
-        tile(`Z-EM in ${f["Calendar Year"]}`, zk(f.Zone), ZLABEL[zk(f.Zone)], fmt(f.Z_EM, 2), `from ${fmt(f0.Z_EM, 2)}`, `No shock: ${fmt(fb.Z_EM, 2)} · base year ${f0["Calendar Year"]}`),
+      put(H.strip,
+        tile(`Z-EM in ${f["Calendar Year"]}`, zk(f.Zone), ZLABEL[zk(f.Zone)], fmt(f.Z_EM, 2), `from ${fmt(f0.Z_EM, 2)}`, `${st.soe} · no shock ${fmt(fb.Z_EM, 2)} · base year ${f0["Calendar Year"]}`),
         tile("Final-year EFC", null, null, money(f.EFC), CUR, `No shock: ${money(fb.EFC)} · ${sgn(fb.EFC ? (f.EFC / fb.EFC - 1) * 100 : NaN, 0)}%`),
         tile("Zone migration", mig ? "watch" : "ok", mig ? "Yes" : "No", mig ? "Yes" : "No", "", `${f0.Zone} → ${f.Zone} by ${f["Calendar Year"]}`),
-        tile("Final-year EFC / GDP", null, null, gs ? pctS(f.EFC_GDP) : "—", "", gs ? `GDP projected at ${fmt(S.growth * 100, 1)}%/yr` : "Enter GDP in the panel to populate"));
+        tile("Final-year EFC / GDP", null, null, gs ? pctS(f.EFC_GDP) : "—", "", gs ? `GDP projected at ${fmt(S.growth * 100, 1)}%/yr` : "Enter GDP in the panel to populate"),
+        hasSub ? tile("Direct fuel subsidy", subT > 0 ? "watch" : "ok", subT > 0 ? "Outlay" : "Saving", money(subT), CUR, `government share ${pct0(p.fuel_subsidy_share)} of the fuel-cost change`) : null);
       const xs = path.map((r) => r["Calendar Year"]);
       const tipRows = (i) => [[fmt(path[i].Z_EM, 2), `stressed · ${path[i].Rating} · ${path[i].Zone}`], [fmt(base[i].Z_EM, 2), `no shock · ${base[i].Rating}`], [money(path[i].EFC), `EFC stressed (no shock ${money(base[i].EFC)})`]];
       lines(H.z.body.lastChild, xs, [{ vals: base.map((r) => r.Z_EM), cls: "ln-base", dot: "prev", skipFirstDot: true, label: "No shock" }, { vals: path.map((r) => r.Z_EM), cls: "ln-str", dot: "now", label: "Stressed" }],
@@ -1453,6 +1498,7 @@
       } catch (e) {
         H.mcerr.replaceChildren(el("div", { class: "alert-box warn", style: "margin-top:10px" }, e.message));
         H.mcres.hidden = true;
+        put(H.strip);
         return;
       }
       H.mcerr.replaceChildren(); H.mcres.hidden = false;
@@ -1460,8 +1506,8 @@
       const q = (k, x) => E.quantile(fin.map((r) => r[k]), x);
       const p50 = q("EFC", 0.5), p95 = q("EFC", 0.95), dist = fin.filter((r) => r.Zone === "Distress").length / fin.length;
       const gF = gs ? last(gs) : null;
-      H.tiles.replaceChildren(
-        tile(`Median EFC, year ${st.H}`, null, null, money(p50), CUR, `${m.n.toLocaleString("en-US")} simulations`),
+      put(H.strip,
+        tile(`Median EFC, year ${st.H}`, null, null, money(p50), CUR, `${st.soe} · ${m.n.toLocaleString("en-US")} simulations`),
         tile("Fiscal-at-risk (p95)", null, null, money(p95), CUR, "Bad but plausible: 1 in 20 draws is worse"),
         tile("Ending in distress", dist > 0.5 ? "alert" : dist > 0 ? "watch" : "ok", null, pct(dist, 0), "", `of simulations, Z-EM ≤ ${CFG.Z_DISTRESS_CUTOFF} in ${last(fin)["Calendar Year"]}`),
         tile("Fiscal-at-risk / GDP", null, null, gF ? pctS(p95 / gF) : "—", "", gF ? `GDP in ${last(fin)["Calendar Year"]}: ${money(gF)}` : "Enter GDP in the panel"));
@@ -1487,6 +1533,16 @@
       const expoFn = own ? (r) => Object.assign(expoFor(r), { fuel_subsidy_share: st.expo.fuel_subsidy_share }) : () => st.expo;
       const res = stressAll(S.en, st.mags, expoFn, st.D, st.H, st.lgd, S.gdp, S.growth, st.ead).map((x) => Object.assign(x, { de: (last(x.str).EFC || 0) - (last(x.base).EFC || 0), sub: sum(x.str.map((r) => r["Direct Fuel Subsidy"])) })).sort((a, b2) => b2.de - a.de);
       const hasSub = res.some((x) => x.sub);
+      {
+        const n = res.length, drops = res.filter((x) => x.drop), tB0 = sum(res.map((x) => last(x.base).EFC)), tS0 = sum(res.map((x) => last(x.str).EFC));
+        const up = tB0 ? (tS0 / tB0 - 1) * 100 : NaN, topR = res[0], dist = res.filter((x) => last(x.str).Zone === "Distress").length;
+        put(H.strip,
+          countTile("Drop a zone vs no shock", drops.length, n, drops.length ? drops.slice(0, 3).map((x) => x.row.Entity).join(", ") + (drops.length > 3 ? "…" : "") : "every SOE keeps its zone"),
+          tile("Portfolio EFC, stressed", ok(up) && up > 0 ? "watch" : "ok", ok(up) && up > 0 ? "Rises" : "Flat", money(tS0), CUR, `no shock ${money(tB0)} · ${sgn(up, 0)}%`),
+          topR ? tile("Largest rise in EFC", null, null, (topR.de >= 0 ? "+" : "") + money(topR.de), CUR, `${topR.row.Entity} · ${topR.row.Sector}`) : null,
+          countTile("In distress at the horizon", dist, n, `Z″ ≤ ${CFG.Z_DISTRESS_CUTOFF} under these shocks`),
+          hasSub ? tile("Direct fuel subsidy", "watch", "Outlay", money(sum(res.map((x) => x.sub))), CUR, "all SOEs, over the shock years") : null);
+      }
       const lastY = res.length ? last(res[0].base)["Calendar Year"] : "";
       const t = el("table");
       const heads = ["SOE", "Z″ base", "Z″ no shock", "Z″ stressed", "Zone drop", "EFC no shock", "EFC stressed", "Δ EFC", ...(hasSub ? ["Fuel subsidy"] : []), ...(gs ? ["Δ / GDP"] : [])];
@@ -1520,6 +1576,7 @@
   pages.gre = {
     build(root) {
       const st = S.gre, H = (this.H = {});
+      H.strip = statStrip();
       if (!S.names.includes(st.sel)) st.sel = S.names[0];
       const sov = card("Sovereign context", "Set once for the country these SOEs sit in; take the rating from the agency's current list.", null, "top");
       sov.body.append(el("div", { class: "fields" },
@@ -1538,12 +1595,24 @@
       H.res = card("Result", null);
       root.replaceChildren(
         pageHead("GOVERNMENT SUPPORT", "Strategic SOEs & Government-Related Entity Uplift", "How important is this SOE to the government (Role), and how tightly linked (Link)? Together they set a bounded uplift above the SOE's own Z-EM-derived rating, capped by the sovereign's rating and tightened automatically if the SOE's rating is falling fast or the sovereign outlook turns negative."),
+        H.strip,
         el("div", { class: "grid" }, el("div", { class: "s4 sticky-panel" }, sov.root), el("div", { class: "s8 stack" }, H.tbl.root, el("div", { class: "grid" }, el("div", { class: "s7" }, H.det.root), el("div", { class: "s5" }, H.res.root)))),
         el("div", { class: "foot" }, el("div", {}, el("b", {}, "Simplified proxy, not S&P's methodology. "), "The Role × Link mapping and uplift ranges are editable in config.py. Uplift only raises a rating, never above the tier's ceiling, and is reported for comparison only — it does not feed PD or EFC, which stay on the standalone rating.")));
     },
     render() {
       const st = S.gre, H = this.H;
       const res = S.names.map((n) => E.gre(S.en, n, st.role[n] || CFG.ROLE_LEVELS[0], st.link[n] || CFG.LINK_LEVELS[0], st.sov, st.outlook));
+      {
+        const n = res.length, up = res.filter((g) => g.notches > 0).length, nn = res.map((g) => g.notches);
+        const capped = res.filter((g) => g.capApplied && g.capped !== g.tier).length;
+        const ceil = res.filter((g) => g.notches > 0 && g.ceilingIdx !== null && g.uIdx === g.ceilingIdx).length;
+        put(H.strip,
+          tile("Sovereign rating", st.outlook === "Negative" ? "watch" : null, st.outlook === "Negative" ? "Negative" : null, st.sov, "", `outlook ${st.outlook} · local currency, long-term`),
+          tile("SOEs lifted by support", up ? "ok" : null, up ? "Uplift" : null, String(up), `of ${n}`, "rated above their standalone level"),
+          tile("Average uplift", null, null, fmt(mean(nn), 1), "notches", n ? `range ${Math.min(...nn)} to ${Math.max(...nn)}` : ""),
+          countTile("Capped by the dynamic trigger", capped, n, "rating fell fast or sovereign outlook negative", "watch"),
+          tile("At the sovereign ceiling", null, null, String(ceil), `of ${n}`, "only a higher-rated sovereign would lift them further"));
+      }
       const t = el("table", { class: "ctl-table" });
       t.appendChild(el("thead", {}, el("tr", {}, ["SOE", "Own rating", "Role", "Link", "Likelihood", "Uplifted", "Notches", "Gap to sovereign"].map((h, i) => el("th", { class: i >= 6 ? "r" : "" }, h)))));
       const tb = el("tbody");
@@ -1645,8 +1714,10 @@
       const H = (this.H = {});
       H.rules = card(null); H.board = card("Signal board", "Each SOE sits under the most severe rule it triggers, with every rule it triggers listed");
       H.tl = card("Score history", "Z″, rating and PD by year, then the standard-stress projection");
+      H.strip = statStrip();
       root.replaceChildren(
         pageHead("EARLY WARNING", "Trigger rules", `Example rules that link SOE financial health to pre-agreed fiscal responses, evaluated on the latest year of each SOE shown. The stress rule uses the standard stress (DSA/DSF convention) over ${CFG.MC_HORIZON_YEARS} years.`),
+        H.strip,
         el("div", { class: "grid" }, el("div", { class: "s12" }, H.rules.root), el("div", { class: "s7" }, H.board.root), el("div", { class: "s5" }, H.tl.root)),
         el("div", { class: "foot" }, el("div", {}, "Rules and actions are illustrative and live in config.TRIGGER_RULES. KPI cutoffs are illustrative.")));
     },
@@ -1654,6 +1725,16 @@
       const H = this.H, rows = latestOf(F()).sort((a, b) => b.Z_EM - a.Z_EM);
       const stress = Object.fromEntries(standardStress(F()).map((x) => [x.row.Entity, x]));
       const { hits, by } = evalTriggers(rows, stress);
+      {
+        const n = rows.length, lv = (k) => rows.filter((r) => by[r.Entity].level === k).length;
+        const common = CFG.TRIGGER_RULES.filter((r) => r.id !== "routine" && hits[r.id].length).sort((a, b) => hits[b.id].length - hits[a.id].length)[0];
+        put(H.strip,
+          tile("Alert", "alert", "Alert", String(lv("alert")), `of ${n}`, "at least one alert rule fires"),
+          tile("Watch", "watch", "Watch", String(lv("watch")), `of ${n}`, "watch rules only"),
+          tile("Good", "ok", "Good", String(lv("ok")), `of ${n}`, "routine annual monitoring"),
+          countTile("Fail the stress test", hits.stress_drop.length, n, "drop a zone under standard stress"),
+          tile("Most common trigger", null, null, common ? String(hits[common.id].length) : "0", common ? "SOEs" : "", common ? common.short : "no rule fires"));
+      }
       H.rules.body.replaceChildren(simpleTable(["Signal", "Condition", "Pre-agreed action (example)", "SOEs"],
         CFG.TRIGGER_RULES.map((r) => [el("td", {}, stChip(r.level)), r.condition, r.action, el("td", {}, el("div", { class: "soe-list" }, hits[r.id].length ? hits[r.id].map((n) => el("span", {}, n)) : el("span", { style: "background:transparent;border-color:transparent;color:var(--muted)" }, "None")))])));
       H.rules.body.querySelector("table").id = "rulesTable";
@@ -1727,8 +1808,9 @@
         return el("section", { class: "rep-sec", id: "rep-" + id, "aria-labelledby": "rep-h-" + id }, el("div", { class: "rep-head" }, el("span", { class: "rep-num num" }, String(i + 1)), el("div", {}, el("h2", { id: "rep-h-" + id }, title), lead)), body);
       });
       H.gen = el("p", { class: "rep-gen" });
+      H.strip = statStrip();
       root.replaceChildren(pageHead("AUTOMATED REPORT", M.title || "SOE Fiscal Risk Report",
-        "Five sections generated from the data loaded in this page. Every number is recomputed when you load other data or change LGD, EAD or GDP on the Expected Fiscal Cost tab; the text is rule-based, not written by a person.", printBtn), toc, ...secs, H.gen);
+        "Five sections generated from the data loaded in this page. Every number is recomputed when you load other data or change LGD, EAD or GDP on the Expected Fiscal Cost tab; the text is rule-based, not written by a person.", printBtn), H.strip, toc, ...secs, H.gen);
     },
     render() {
       const H = this.H, st = S.rep, rows = latestOf(allRows()), n = rows.length;
@@ -1766,7 +1848,17 @@
       const dq = S.rows.filter((r) => /proxy|estimate|unaudit/i.test(`${r["Data Quality Flag"] || ""} ${r["Audit Status"] || ""}`)).length;
       const ph = CFG.PARAMETER_REGISTER.filter((r) => r.status === "placeholder").length;
       msgs.push([`Data and assumptions: `, (dq ? `${dq} of ${S.rows.length} SOE-year rows are flagged as proxy, estimated or unaudited; ` : S.rows.some((r) => r["Data Quality Flag"] || r["Audit Status"]) ? "no rows are flagged as proxy or unaudited; " : "the file carries no provenance flags; ") + `${ph} of ${CFG.PARAMETER_REGISTER.length} model parameters are still placeholders that need a source.`]);
-      ex.body.replaceChildren(el("div", { class: "card keymsg" }, el("h3", {}, "Key messages"), el("ul", {}, msgs.map(([b, t]) => el("li", {}, el("b", {}, b), t)))), el("div", { class: "grid" }, hero, tiles));
+      hero.className = "card s5 hero";
+      ex.body.replaceChildren(el("div", { class: "grid" }, el("div", { class: "s7" }, el("div", { class: "card keymsg", style: "height:100%" }, el("h3", {}, "Key messages"), el("ul", {}, msgs.map(([b, t]) => el("li", {}, el("b", {}, b), t))))), hero));
+      let efcSt = null;
+      if (S.gdp) { const gg = total / S.gdp; efcSt = gg >= CFG.REPORT_EFC_GDP_ALERT ? "alert" : gg >= CFG.REPORT_EFC_GDP_WATCH ? "watch" : "ok"; }
+      const upPct = comb.eB ? (comb.eS / comb.eB - 1) * 100 : NaN;
+      put(H.strip,
+        countTile("SOEs in distress", ov.zc.Distress, n, `${ov.zc.Grey} more in the grey zone · latest year`),
+        tile("Expected fiscal cost", efcSt, efcSt ? STLABEL[efcSt] : null, money(total), CUR, S.gdp ? `${pctS(total / S.gdp)} of GDP · LGD ${fmt(S.efc.lgd, 0)}%` : `PD × EAD × LGD · LGD ${fmt(S.efc.lgd, 0)}%`),
+        countTile("Drop a zone under stress", comb.drops.length, n, `standard stress, by ${horizonYear}`),
+        tile("EFC under standard stress", ok(upPct) && upPct > 0 ? "watch" : "ok", ok(upPct) && upPct > 0 ? "Rises" : "Flat", (ok(upPct) ? sgn(upPct, 0) : "—") + "%", "", `${money(comb.eB)} → ${money(comb.eS)} ${CUR}`.trim()),
+        countTile("Alert-level SOEs", nAlert, n, `${nWatch} more on watch · section 5`));
 
       /* 2. financial performance */
       const pf = H.sec.perf;
@@ -1881,7 +1973,7 @@
     build(root) {
       const st = S.asm, H = (this.H = {});
       const reg = CFG.PARAMETER_REGISTER, labels = CFG.PARAMETER_STATUS_LABELS;
-      const tiles = el("div", { class: "autogrid" }, Object.keys(labels).map((k) => { const [a, b] = labels[k].split(" — "); return tile(a, ASM_K[k], ({ literature: "Sourced", user: "Set by you", proxy: "Proxy", placeholder: "Needs source", design: "Justify" })[k], String(reg.filter((r) => r.status === k).length), `of ${reg.length}`, b ? b[0].toUpperCase() + b.slice(1) : ""); }));
+      const tiles = el("div", { class: "statstrip" }, Object.keys(labels).map((k) => { const [a, b] = labels[k].split(" — "); return tile(a, ASM_K[k], ({ literature: "Sourced", user: "Set by you", proxy: "Proxy", placeholder: "Needs source", design: "Justify" })[k], String(reg.filter((r) => r.status === k).length), `of ${reg.length}`, b ? b[0].toUpperCase() + b.slice(1) : ""); }));
       const groups = uniq(reg.map((r) => r.group));
       const ctl = el("div", { class: "row-ctl" },
         el("div", { class: "fld" }, el("span", { class: "lbl" }, "Status"), chipsMulti(Object.keys(labels).map((k) => [k, labels[k].split(" — ")[0]]), st.status, () => this.render())),

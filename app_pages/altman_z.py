@@ -5,7 +5,9 @@ import calculations
 import narrative
 import config as cfg
 from config import BAR_CORNER_RADIUS, CHART_LAYOUT, GLOSSARY, LINE_SHAPE, LINE_SMOOTHING, THEME, ZONE_COLORS
+from utils import overview as ov
 from utils import theme, summary
+from utils.portfolio import latest_per_entity
 from utils.charts import MINIMAL_MODEBAR_CONFIG, download_row, wrap_label, add_smooth_line, year_axis
 from utils.filters import render_filters
 
@@ -31,6 +33,27 @@ if df.empty:
     st.stop()
 
 df = calculations.compute_zem_components(df)
+
+# ------------------------------------------------------------------ #
+# Key figures (latest year per SOE)
+# ------------------------------------------------------------------ #
+_latest = latest_per_entity(df)
+_n = len(_latest)
+_zc = {z: int((_latest["Zone"] == z).sum()) for z in ["Distress", "Grey", "Safe"]}
+_mz = float(_latest["Z_EM"].median())
+_mzone = calculations.classify_zone(_mz)
+_fall = 0
+for _e in _latest["Entity"]:
+    _nc = calculations.rating_notch_change(df, _e)[2]
+    if _nc is not None and _nc <= -cfg.DYNAMIC_CAP_TRIGGER_NOTCHES:
+        _fall += 1
+theme.stat_strip([
+    theme.tile("Distress zone", str(_zc["Distress"]), f"of {_n}", f"Z″ ≤ {cfg.Z_DISTRESS_CUTOFF} · latest year", status="alert" if _zc["Distress"] else "ok"),
+    theme.tile("Grey zone", str(_zc["Grey"]), f"of {_n}", f"{cfg.Z_DISTRESS_CUTOFF} < Z″ ≤ {cfg.Z_SAFE_CUTOFF}", status="watch" if _zc["Grey"] else "ok"),
+    theme.tile("Safe zone", str(_zc["Safe"]), f"of {_n}", f"Z″ > {cfg.Z_SAFE_CUTOFF}", status="ok", status_text="● Safe"),
+    theme.tile("Median Z″", f"{_mz:.2f}", "", f"indicative rating {cfg.z_rating(_mz)}", status=ov.ZONE_STATUS.get(_mzone), status_text=ov.ZONE_TEXT.get(_mzone)),
+    theme.count_tile(f"Rating down {cfg.DYNAMIC_CAP_TRIGGER_NOTCHES}+ notches", _fall, _n, "first to latest year", bad="watch"),
+])
 has_years = df["Year"].nunique() > 1
 
 

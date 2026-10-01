@@ -5,6 +5,7 @@ import streamlit as st
 import calculations
 import config
 import shocks
+from utils import overview as ov
 from utils import theme
 from utils.charts import MINIMAL_MODEBAR_CONFIG, download_row, add_smooth_line, band_trace, year_axis
 
@@ -42,6 +43,9 @@ with st.expander("What do these shocks mean?"):
     )
 
 df = calculations.compute_zem_components(st.session_state.soe_df)
+# key figures sit at the top of the page; they are filled in once the scenario has run below
+strip_box = st.container()
+_scale, _cur = ov.unit_scale(df), ov.currency(df)
 
 col1, col2 = st.columns(2)
 with col1:
@@ -199,18 +203,29 @@ if view_mode == "Single scenario":
     base = scenario.iloc[0]
     final = scenario.iloc[-1]
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.markdown(theme.stat_card("📉", "blue", "Z-EM: base → final", f"{base['Z_EM']:.2f} → {final['Z_EM']:.2f}", f"{final['Zone']} in year {horizon_years}"), unsafe_allow_html=True)
-    with c2:
-        st.markdown(theme.stat_card("💰", "red", "Final-year EFC", f"{final['EFC']:,.0f}"), unsafe_allow_html=True)
-    with c3:
-        migrated = base["Zone"] != final["Zone"]
-        st.markdown(theme.stat_card("→", "amber" if migrated else "green", "Zone migration", "Yes" if migrated else "No", f"{base['Zone']} → {final['Zone']}"), unsafe_allow_html=True)
-    with c4:
-        efc_gdp_final = final["EFC_pct_GDP"]
-        st.markdown(theme.stat_card("%", "purple", "Final-year EFC / GDP", f"{efc_gdp_final:.2%}" if efc_gdp_final == efc_gdp_final else "—", "enter GDP above to populate"), unsafe_allow_html=True)
+    # the same scenario with no shock, for the comparisons in the key figures
+    _zero = dict(params, **{k: 0.0 for k in ov.MAGNITUDES}, revenue_shock_pct=0.0)
+    _nos = shocks.run_scenario(base_row, _zero, horizon_years)
+    _nos["PD"] = _nos["Rating"].apply(calculations.compute_pd_from_rating)
+    _nos["EFC"] = _nos["PD"] * _nos["Total Liabilities"] * ead_share * lgd_pct / 100.0
+    _fb = _nos.iloc[-1]
+    migrated = base["Zone"] != final["Zone"]
+    efc_gdp_final = final["EFC_pct_GDP"]
     total_subsidy = scenario["Direct Fuel Subsidy"].sum()
+    _yr = int(final["Calendar Year"])
+    theme.stat_strip([
+        theme.tile(f"Z-EM in {_yr}", f"{final['Z_EM']:.2f}", f"from {base['Z_EM']:.2f}",
+                   f"{sel_entity} · no shock {_fb['Z_EM']:.2f} · base year {int(base['Calendar Year'])}",
+                   status=ov.ZONE_STATUS.get(final["Zone"]), status_text=ov.ZONE_TEXT.get(final["Zone"])),
+        theme.tile("Final-year EFC", ov.money(final["EFC"], _scale), _cur,
+                   f"No shock: {ov.money(_fb['EFC'], _scale)} · {ov.signed((final['EFC'] / _fb['EFC'] - 1) * 100 if _fb['EFC'] else float('nan'))}%"),
+        theme.tile("Zone migration", "Yes" if migrated else "No", "", f"{base['Zone']} → {final['Zone']} by {_yr}",
+                   status="watch" if migrated else "ok", status_text="▲ Yes" if migrated else "● No"),
+        theme.tile("Final-year EFC / GDP", ov.pct_small(efc_gdp_final) if base_gdp else "—", "",
+                   f"GDP projected at {gdp_growth:.1%}/yr" if base_gdp else "Enter GDP above to populate"),
+        theme.tile("Direct fuel subsidy", ov.money(total_subsidy, _scale), _cur, f"government share {fuel_subsidy_share:.0%} of the fuel-cost change",
+                   status="watch" if total_subsidy > 0 else "ok", status_text="▲ Outlay" if total_subsidy > 0 else "● Saving") if fuel_subsidy_share else None,
+    ], container=strip_box)
     if total_subsidy:
         st.markdown(
             f'<div class="sfp-alert info">Direct fuel subsidy (Case C) over the horizon: <b>{total_subsidy:,.0f}</b> — a budget outlay '
@@ -362,16 +377,15 @@ else:
     pct_distress = (mc_final["Zone"] == "Distress").mean()
     gdp_final = shocks.gdp_path(base_gdp, gdp_growth, horizon_years)[-1] if base_gdp else None
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.markdown(theme.stat_card("~", "blue", f"Median EFC (year {horizon_years})", f"{p50_efc:,.0f}"), unsafe_allow_html=True)
-    with c2:
-        st.markdown(theme.stat_card("⚠️", "red", "Fiscal-at-risk (95th pct.)", f"{p95_efc:,.0f}", config.GLOSSARY["Fiscal-at-risk"]), unsafe_allow_html=True)
-    with c3:
-        st.markdown(theme.stat_card("%", "amber", "Simulations ending in Distress", f"{pct_distress:.0%}"), unsafe_allow_html=True)
-    with c4:
-        st.markdown(theme.stat_card("%", "purple", "Fiscal-at-risk / GDP", f"{(p95_efc/gdp_final):.2%}" if gdp_final else "—", "enter GDP above"), unsafe_allow_html=True)
-    st.markdown("<br>", unsafe_allow_html=True)
+    _yr = int(mc_final["Calendar Year"].iloc[0])
+    theme.stat_strip([
+        theme.tile(f"Median EFC, year {horizon_years}", ov.money(p50_efc, _scale), _cur, f"{sel_entity} · {n_sims:,} simulations"),
+        theme.tile("Fiscal-at-risk (p95)", ov.money(p95_efc, _scale), _cur, "Bad but plausible: 1 in 20 draws is worse"),
+        theme.tile("Ending in distress", f"{pct_distress:.0%}", "", f"of simulations, Z-EM ≤ {config.Z_DISTRESS_CUTOFF} in {_yr}",
+                   status="alert" if pct_distress > 0.5 else "watch" if pct_distress > 0 else "ok"),
+        theme.tile("Fiscal-at-risk / GDP", ov.pct_small(p95_efc / gdp_final) if gdp_final else "—", "",
+                   f"GDP in {_yr}: {ov.money(gdp_final, _scale)}" if gdp_final else "Enter GDP above"),
+    ], container=strip_box)
 
     col_a, col_b = st.columns(2)
     with col_a:

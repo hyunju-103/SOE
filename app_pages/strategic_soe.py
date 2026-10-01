@@ -51,6 +51,8 @@ with st.expander("What do Role, Link, and this uplift mean?"):
     )
 
 df = calculations.compute_zem_components(st.session_state.soe_df)
+# key figures sit at the top of the page; they are filled in after the per-SOE assessment below
+strip_box = st.container()
 
 # --- Sovereign context (single country per session) -----------------------
 st.markdown('<div class="sfp-card"><div class="sfp-title">Sovereign context</div>', unsafe_allow_html=True)
@@ -141,16 +143,34 @@ for entity in entities:
                 unsafe_allow_html=True,
             )
 
+        ceiling_binds = bool(notches_gained > 0 and sovereign_idx is not None and max_notches != 0
+                             and uplifted_idx == sovereign_idx - (min_gap or 0))
         results.append({
+            "_capped": bool(cap_triggers) and capped_tier != tier, "_ceiling": ceiling_binds,
             "Entity": entity, "Sector": latest.get("Sector", ""), "SACP Rating": sacp_rating,
             "Role": role, "Link": link, "Likelihood Tier": capped_tier,
             "Dynamic Cap Applied": "Yes" if cap_triggers else "No",
             "Uplifted Rating": uplifted_rating, "Notches Gained": notches_gained,
         })
 
+# --- Key figures (top of the page) ------------------------------------------
+results_df = pd.DataFrame(results)
+if not results_df.empty:
+    _n = len(results_df)
+    _nn = results_df["Notches Gained"]
+    _up = int((_nn > 0).sum())
+    theme.stat_strip([
+        theme.tile("Sovereign rating", sovereign_rating, "", f"outlook {sovereign_outlook} · local currency, long-term",
+                   status="watch" if sovereign_outlook == "Negative" else None, status_text="▲ Negative"),
+        theme.tile("SOEs lifted by support", str(_up), f"of {_n}", "rated above their standalone level", status="ok" if _up else None, status_text="● Uplift"),
+        theme.tile("Average uplift", f"{_nn.mean():.1f}", "notches", f"range {_nn.min()} to {_nn.max()}"),
+        theme.count_tile("Capped by the dynamic trigger", int(results_df["_capped"].sum()), _n, "rating fell fast or sovereign outlook negative", bad="watch"),
+        theme.tile("At the sovereign ceiling", str(int(results_df["_ceiling"].sum())), f"of {_n}", "only a higher-rated sovereign would lift them further"),
+    ], container=strip_box)
+    results_df = results_df.drop(columns=["_capped", "_ceiling"])
+
 # --- Portfolio summary ------------------------------------------------------
 st.markdown('<div class="sfp-card"><div class="sfp-title">Portfolio summary</div>', unsafe_allow_html=True)
-results_df = pd.DataFrame(results)
 if not results_df.empty:
     rows_html = "".join(
         f"<tr><td>{r['Entity']}</td><td>{r['Sector']}</td><td>{r['SACP Rating']}</td>"

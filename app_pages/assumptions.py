@@ -24,11 +24,15 @@ labels = config.PARAMETER_STATUS_LABELS
 chip = {"literature": "green", "user": "muted", "proxy": "amber", "placeholder": "red", "design": "amber"}
 
 counts = reg["status"].value_counts()
-cols = st.columns(len(labels))
-for col, (key, label) in zip(cols, labels.items()):
-    with col:
-        st.markdown(theme.stat_card("", "blue", label, str(int(counts.get(key, 0))), ""), unsafe_allow_html=True)
-st.markdown("<br>", unsafe_allow_html=True)
+_status = {"literature": ("ok", "● Sourced"), "user": (None, "Set by you"), "proxy": ("watch", "▲ Proxy"),
+           "placeholder": ("alert", "■ Needs source"), "design": ("watch", "▲ Justify")}
+_tiles = []
+for key, label in labels.items():
+    head, _, rest = label.partition(" — ")
+    stt, txt = _status.get(key, (None, ""))
+    _tiles.append(theme.tile(head, str(int(counts.get(key, 0))), f"of {len(reg)}", rest[:1].upper() + rest[1:] if rest else "",
+                             status=stt, status_text=txt))
+theme.stat_strip(_tiles)
 
 sel = st.multiselect("Show", list(labels), default=list(labels), format_func=lambda k: labels[k], key="reg_status")
 groups = st.multiselect("Groups", list(dict.fromkeys(reg["group"])), default=list(dict.fromkeys(reg["group"])), key="reg_groups")

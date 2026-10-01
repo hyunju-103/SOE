@@ -4,8 +4,8 @@ import streamlit as st
 import calculations
 import config
 import data_loader
-from utils import theme
-from utils.portfolio import latest_per_entity
+from utils import overview as ov
+from utils import summary, theme
 
 THEME_HEADING = config.THEME["heading"]
 
@@ -27,173 +27,169 @@ if st.session_state.soe_df is not None:
 theme.header(
     "SOE FISCAL RISK TOOL",
     "SOE Fiscal Risk Dashboard",
-    "A four-layer framework for state-owned enterprises: financial diagnostics "
+    "A layered framework for state-owned enterprises: financial diagnostics "
     "(KPI Dashboard), distress signal (Altman Z-EM), fiscal exposure to the "
-    "sovereign (Expected Fiscal Cost), and dynamic shock simulation "
-    "(Shock Scenarios). The HTML version page exports the whole tool as one shareable file.",
+    "sovereign (Expected Fiscal Cost), dynamic shock simulation (Shock Scenarios) "
+    "and government support. The HTML version page exports the whole tool as one shareable file.",
     meta=_meta,
 )
 
-# Loading data comes first: upload, built-in datasets, template, preview.
-
 # ------------------------------------------------------------------ #
-# Data upload
+# Top row: load data (left half) | portfolio overview (right half)
 # ------------------------------------------------------------------ #
+BUILTIN = {
+    "sample": ("Example", "SOE A and B · 2020–2024", data_loader.sample_dataset, "Built-in sample: SOE A (Energy), SOE B (Transport)"),
+    "demo": ("Demo portfolio", "8 SOEs · 7 sectors", data_loader.demo_portfolio, "Illustrative demo portfolio: 8 invented SOEs"),
+    "long": ("Long panel", "30 SOEs · 20 years", data_loader.long_panel_demo, data_loader.LONG_PANEL_LABEL),
+}
 
-st.markdown('<div class="sfp-card">', unsafe_allow_html=True)
-up_label, up_widget = st.columns([1, 2])
-with up_label:
-    st.markdown(
-        '<div class="sfp-title" style="margin-bottom:6px;">Upload your data</div>'
-        '<p class="sfp-hint">CSV or Excel, one row per SOE-year.</p>',
-        unsafe_allow_html=True,
-    )
-with up_widget:
-    uploaded = st.file_uploader("Drop a CSV or Excel file", type=["csv", "xlsx", "xls"], label_visibility="collapsed")
 
-if uploaded is not None:
-    try:
-        df, mapping = data_loader.load_and_standardize(uploaded)
-        validation = data_loader.validate_schema(df)
-        st.session_state.column_mapping = mapping
-        if validation["missing_required"]:
-            st.markdown(
-                f'<div class="sfp-alert warn">Missing required column(s): '
-                f'{", ".join(validation["missing_required"])}. Please add these and re-upload.</div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            df = data_loader.coerce_numeric(df)
-            issues = data_loader.numeric_issues(df)
-            st.session_state.soe_df = df
-            st.session_state.using_sample = False
-            st.session_state.sample_label = uploaded.name
-            note = f"Loaded {df['Entity'].nunique()} SOE(s), {len(df)} SOE-year rows."
-            if not issues.empty:
-                note += f" {len(issues)} row(s) have non-numeric or missing required values."
-            st.markdown(f'<div class="sfp-alert ok">✓ {note}</div>', unsafe_allow_html=True)
-            if validation["missing_optional"]:
-                with st.expander("Optional shock-module fields not present (not required for this build)"):
-                    st.write(", ".join(validation["missing_optional"]))
-            renamed = mapping[(mapping["Mapped to"] != "") & (mapping["Uploaded column"] != mapping["Mapped to"])]
-            review = mapping[mapping["Confidence"].isin(["LOW"]) | mapping["Method"].isin(["unmatched", "duplicate"])]
-            with st.expander(f"Column mapping — {len(renamed)} renamed to the standard schema, {len(review)} to review"):
-                st.dataframe(mapping, use_container_width=True, hide_index=True)
-                st.caption("HIGH = exact name, MEDIUM = known synonym, LOW = close spelling (check it). Unmatched columns are kept but not used.")
-    except Exception as e:
-        st.markdown(f'<div class="sfp-alert warn">Couldn\'t read that file: {e}</div>', unsafe_allow_html=True)
-st.markdown("</div>", unsafe_allow_html=True)
-
-# ------------------------------------------------------------------ #
-# Try it with example data
-# ------------------------------------------------------------------ #
-
-st.markdown('<div class="sfp-card"><div class="sfp-title">Try it with example data</div>', unsafe_allow_html=True)
-ex1, ex2 = st.columns(2)
-with ex1:
-    if st.button("Use example data (SOE A — Energy, SOE B — Transport)"):
-        st.session_state.soe_df = data_loader.sample_dataset()
-        st.session_state.using_sample = True
-        st.session_state.sample_label = "Built-in sample: SOE A (Energy), SOE B (Transport)"
-        st.rerun()
-    st.caption("Two SOEs, five years of full statements (2020–2024) — Z-EM and every ratio computed live.")
-with ex2:
-    if st.button("Use demo portfolio (8 SOEs, 7 sectors)"):
-        st.session_state.soe_df = data_loader.demo_portfolio()
-        st.session_state.using_sample = True
-        st.session_state.sample_label = "Illustrative demo portfolio: 8 invented SOEs"
-        st.rerun()
-    st.caption("The two sample SOEs plus six invented ones spanning safe, grey and distress — for demos.")
-if st.button("Try a long panel: 30 SOEs × 20 years (test data)"):
-    st.session_state.soe_df = data_loader.long_panel_demo()
+def _load_builtin(key):
+    _name, _sub, make, label = BUILTIN[key]
+    st.session_state.soe_df = make()
     st.session_state.using_sample = True
-    st.session_state.sample_label = data_loader.LONG_PANEL_LABEL
-    st.rerun()
-st.caption("Invented 2005–2024 panel to see how 20-year histories and 30-SOE portfolios are drawn.")
-st.markdown("</div>", unsafe_allow_html=True)
+    st.session_state.sample_label = label
+    st.session_state.column_mapping = None
+    st.session_state.upload_note = None
+
+
+col_load, col_over = st.columns(2, gap="medium")
+
+with col_load:
+    st.markdown('<div class="sfp-title" style="margin-bottom:6px;">Load data</div>', unsafe_allow_html=True)
+    uploaded = st.file_uploader(
+        "Drop a CSV or Excel file here", type=["csv", "xlsx", "xls", "txt"],
+        help="One row per SOE-year. Column names are matched to the standard schema, numbers such as "
+             "1,234 · (1,234) · 35% are read, and title rows above the table are skipped.",
+    )
+    # read a file once, when it arrives — not again on every rerun (so a built-in dataset can replace it)
+    if uploaded is not None and st.session_state.get("last_upload_id") != uploaded.file_id:
+        st.session_state.last_upload_id = uploaded.file_id
+        try:
+            df_up, mapping = data_loader.load_and_standardize(uploaded)
+            validation = data_loader.validate_schema(df_up)
+            st.session_state.column_mapping = mapping
+            if validation["missing_required"]:
+                st.session_state.upload_note = ("warn", "Missing required column(s): " + ", ".join(validation["missing_required"])
+                                                + ". Check the column mapping below, rename or add these columns, and upload again.")
+            else:
+                df_up = data_loader.coerce_numeric(df_up)
+                issues = data_loader.numeric_issues(df_up)
+                st.session_state.soe_df = df_up
+                st.session_state.using_sample = False
+                st.session_state.sample_label = uploaded.name
+                note = f"✓ Loaded {df_up['Entity'].nunique()} SOE(s), {len(df_up)} SOE-year rows from {uploaded.name}."
+                if not issues.empty:
+                    note += f" {len(issues)} row(s) have non-numeric or missing required values — check the data preview below."
+                st.session_state.upload_note = ("ok", note)
+                st.rerun()
+        except Exception as e:  # noqa: BLE001 — show the reader's message to the user
+            st.session_state.upload_note = ("warn", f"Couldn't read that file: {e}")
+    note = st.session_state.get("upload_note")
+    if note:
+        st.markdown(f'<div class="sfp-alert {note[0]}">{note[1]}</div>', unsafe_allow_html=True)
+
+    d0 = st.session_state.soe_df
+    if d0 is not None:
+        yrs = sorted(d0["Year"].dropna().unique().tolist())
+        st.markdown(
+            f'<div class="sfp-hint" style="margin-top:6px"><b>Now showing:</b> {st.session_state.get("sample_label", "Loaded data")} · '
+            f'{d0["Entity"].nunique()} SOEs · {len(d0)} SOE-year rows · {yrs[0]:.0f}–{yrs[-1]:.0f}</div>',
+            unsafe_allow_html=True,
+        )
+    st.markdown('<div class="sfp-hint" style="margin:10px 0 4px"><b>Or try built-in data</b></div>', unsafe_allow_html=True)
+    b_cols = st.columns(3)
+    for (key, (name, sub, _make, label)), bc in zip(BUILTIN.items(), b_cols):
+        with bc:
+            if st.button(name, key=f"ds_{key}", help=sub, use_container_width=True,
+                         type="primary" if st.session_state.get("sample_label") == label else "secondary"):
+                _load_builtin(key)
+                st.rerun()
+            st.caption(sub)
+    st.markdown('<div class="sfp-hint" style="margin:6px 0 4px"><b>Standard template</b></div>', unsafe_allow_html=True)
+    t1, t2 = st.columns(2)
+    with t1:
+        st.download_button("⬇ Excel template (with dictionary)", data_loader.template_excel_bytes(), file_name="soe_toolkit_template.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+    with t2:
+        st.download_button("⬇ CSV template", data_loader.TEMPLATE_CSV, file_name="soe_tool_template.csv", use_container_width=True)
+
+with col_over:
+    st.markdown('<div class="sfp-title" style="margin-bottom:6px;">Portfolio overview</div>', unsafe_allow_html=True)
+    d0 = st.session_state.soe_df
+    if d0 is None:
+        st.markdown('<div class="sfp-alert info">No data loaded yet. Upload a file, or try one of the built-in datasets.</div>',
+                    unsafe_allow_html=True)
+    else:
+        dz = calculations.compute_zem_components(data_loader.coerce_numeric(d0))
+        o = ov.portfolio_overview(dz)
+        n, zc = o["n"], o["zones"]
+        scale, cur = ov.unit_scale(d0), ov.currency(d0)
+        share = (zc["Distress"] + zc["Grey"]) / n if n else float("nan")
+        bar = "".join(
+            f'<div style="width:{zc[z] / n * 100:.4f}%;background:{col}"></div>'
+            for z, col in [("Safe", config.THEME["green"]), ("Grey", config.THEME["amber"]), ("Distress", config.THEME["red"])] if zc[z]
+        )
+        legend = "".join(
+            f"{theme.status_chip(c, z_label)} <b>{zc[z]}</b> ({int(zc[z] / n * 100 + 0.5)}%)"
+            for z, c, z_label in [("Safe", "green", "Safe"), ("Grey", "amber", "Grey zone"), ("Distress", "red", "Distress")]
+        )
+        st.markdown(
+            f'<div class="sfp-hero"><div class="sfp-hero-label">SOEs in distress or the grey zone</div>'
+            f'<div class="sfp-hero-value">{int(share * 100 + 0.5)}%<small>{zc["Distress"] + zc["Grey"]} of {ov.plural(n, "SOE")} · average Z″ {o["mean_z"]:.2f}</small></div>'
+            f'<div class="sfp-zonebar">{bar}</div><div class="sfp-zonelegend">{legend}</div>'
+            f'<div class="sfp-hint" style="margin:0">{summary.summarize_zone_distribution(o["latest"].sort_values("Z_EM", ascending=False))}</div></div>',
+            unsafe_allow_html=True,
+        )
+        top, total = o["top"], o["efc_total"]
+        up = (o["efc_stress"] / o["efc_base"] - 1) * 100 if o["efc_base"] else float("nan")
+        drops = o["drops"]
+        drop_txt = ", ".join(drops[:4]) + (f" and {len(drops) - 4} more" if len(drops) > 4 else "")
+        tiles = [
+            theme.tile("Expected fiscal cost, portfolio", ov.money(total, scale), cur,
+                       f"PD × EAD × LGD, latest year · LGD {config.LGD_SLIDER_DEFAULT}% · EAD {config.EAD_SHARE_DEFAULT:.0%} of liabilities"),
+            theme.tile("Largest single exposure", ov.money(top["EFC"], scale), cur,
+                       f"{top['Entity']} · {top['EFC'] / total * 100 if total else 0:.0f}% of portfolio EFC · rated {top['Rating']}, PD {ov.pct(top['PD'], 1)}",
+                       status=ov.ZONE_STATUS.get(top["Zone"]), status_text=ov.ZONE_TEXT.get(top["Zone"])) if top is not None else None,
+            theme.tile("Drop a zone under standard stress", str(len(drops)), f"of {n} SOEs",
+                       (drop_txt + " · " if drops else "") + f"portfolio EFC {ov.signed(up)}% against no shock in year {config.MC_HORIZON_YEARS} · each SOE's own exposures",
+                       status="alert" if drops else "ok"),
+        ]
+        w = o["worst"]
+        if w and w[0] < 0:
+            dzv, r, f = w
+            tiles.append(theme.tile("Fastest deterioration", f"{dzv:+.2f}".replace("-", "−"), "Z″ points",
+                                    f"{r['Entity']}: {f['Z_EM']:.2f} in {int(f['Year'])} to {r['Z_EM']:.2f} in {int(r['Year'])} · {f['Rating']} to {r['Rating']}",
+                                    status=ov.ZONE_STATUS.get(r["Zone"]), status_text=ov.ZONE_TEXT.get(r["Zone"])))
+        else:
+            tiles.append(theme.tile("Fastest deterioration", "None", "", "No SOE's Z″ fell over the period" if o["n_moved"] else "Needs at least two years per SOE", status="ok"))
+        st.markdown(f'<div class="sfp-2col">{"".join(theme.tile_html(**t) for t in tiles if t)}</div>', unsafe_allow_html=True)
 
 # ------------------------------------------------------------------ #
-# Template
+# Details of the data on screen (full width, collapsed)
 # ------------------------------------------------------------------ #
-
-st.markdown('<div class="sfp-card"><div class="sfp-title">Template</div>', unsafe_allow_html=True)
-tc1, tc2 = st.columns(2)
-with tc1:
-    st.download_button("Template: standard schema (Excel, with dictionary)", data_loader.template_excel_bytes(),
-                       file_name="soe_toolkit_template.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-with tc2:
-    st.download_button("Template: raw financials (CSV, tool column names)", data_loader.TEMPLATE_CSV, file_name="soe_tool_template.csv")
-st.markdown(
-    '<p class="sfp-hint">The Excel template is the standard SOE × year schema — the target format for the PDF → Excel '
-    'extraction pipeline. Its Dictionary sheet lists every variable, the statement it comes from and the label variants the '
-    'upload recognises (e.g. "Operating Costs", "OPEX" → operating_expense); provenance columns (source_file, source_page, '
-    'audit_status, extraction_method, data_quality_flag) keep the audit trail.</p>',
-    unsafe_allow_html=True,
-)
+mapping = st.session_state.get("column_mapping")
+if mapping is not None and len(mapping):
+    renamed = mapping[(mapping["Mapped to"] != "") & (mapping["Uploaded column"] != mapping["Mapped to"])]
+    review = mapping[mapping["Confidence"].isin(["LOW"]) | mapping["Method"].isin(["unmatched", "duplicate"])]
+    with st.expander(f"Column mapping — {len(renamed)} renamed to the standard schema, {len(review)} to review", expanded=len(review) > 0):
+        st.dataframe(mapping, use_container_width=True, hide_index=True)
+        st.caption("HIGH = exact name, MEDIUM = known synonym, LOW = close spelling (check it). Unmatched columns are kept but not used.")
 with st.expander("Required and optional columns"):
     st.markdown(f"**Required:** {', '.join(config.REQUIRED_COLUMNS)}.")
     st.markdown("**Optional, used when present:** Short Term Debt, FX Debt, Fuel Cost and the exposure shares "
                 "(bottom-up shock exposures); Government Guaranteed Debt (observed EAD); Source File, Source Page, "
                 "Audit Status, Extraction Method and Data Quality Flag (provenance). Missing ones fall back to "
                 "sector or generic defaults. The full list with synonyms is on the Assumptions & sources page.")
-st.markdown("</div>", unsafe_allow_html=True)
-
-# ------------------------------------------------------------------ #
-# Data preview
-# ------------------------------------------------------------------ #
-
-if st.session_state.soe_df is None:
-    st.markdown(
-        '<div class="sfp-alert info">No data loaded yet. Upload a file above, or try the example portfolio.</div>',
-        unsafe_allow_html=True,
-    )
-else:
-    if st.session_state.using_sample:
-        st.markdown(
-            '<div class="sfp-alert info">Showing example data. Upload your own file above to replace it.</div>',
-            unsafe_allow_html=True,
-        )
-    with st.expander("Data preview"):
-        st.dataframe(st.session_state.soe_df, use_container_width=True, height=240)
+if st.session_state.soe_df is not None:
+    with st.expander(f"Data preview ({len(st.session_state.soe_df)} rows)"):
+        st.dataframe(st.session_state.soe_df, use_container_width=True, height=280)
     dq = data_loader.data_quality_summary(st.session_state.soe_df)
     if not dq.empty:
         with st.expander("Data quality and provenance"):
             st.dataframe(dq, use_container_width=True, hide_index=True)
             st.caption("From the provenance columns of the upload: Observed vs Proxy vs User assumption, audit status and extraction method.")
-    st.markdown(
-        '<p class="sfp-hint">Use the pages in the top nav — KPI Dashboard, Altman Z-EM, Expected Fiscal '
-        "Cost, Shock Scenarios — to explore this data.</p>",
-        unsafe_allow_html=True,
-    )
-
-
-# ------------------------------------------------------------------ #
-# Overview stat row
-# ------------------------------------------------------------------ #
-
-if st.session_state.soe_df is not None:
-    full = calculations.compute_zem_components(st.session_state.soe_df)
-    d = latest_per_entity(full)
-    n_soe = d["Entity"].nunique()
-    n_sectors = d["Sector"].nunique() if "Sector" in d.columns else 0
-    distress_n = int((d["Zone"] == "Distress").sum())
-    avg_z = d["Z_EM"].mean() if n_soe else float("nan")
-
-    s1, s2, s3, s4 = st.columns(4)
-    with s1:
-        st.markdown(theme.stat_card("🏛️", "blue", "Total SOEs", n_soe, f"Across {n_sectors} sector(s)"), unsafe_allow_html=True)
-    with s2:
-        st.markdown(theme.stat_card("📊", "purple", "Average Z-EM", f"{avg_z:.2f}", "Portfolio-wide, latest year"), unsafe_allow_html=True)
-    with s3:
-        pct = (distress_n / n_soe * 100) if n_soe else 0
-        st.markdown(
-            theme.stat_card("⚠️", "red", "SOEs in distress", f"{distress_n} / {n_soe}", f"{pct:.0f}% of portfolio (Z-EM ≤ 1.1)"),
-            unsafe_allow_html=True,
-        )
-    with s4:
-        st.markdown(theme.stat_card("🌍", "green", "Coverage", "Multi-sector", "Filter by sector on any page"), unsafe_allow_html=True)
-    st.markdown("<br>", unsafe_allow_html=True)
+st.markdown("<br>", unsafe_allow_html=True)
 
 # ------------------------------------------------------------------ #
 # Toolkit map — where this tool sits in the SOE fiscal-risk toolkit

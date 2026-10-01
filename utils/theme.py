@@ -103,19 +103,41 @@ def inject():
 
         /* ---------------- Stat tiles ---------------- */
         .sfp-stat {{
-            background: {THEME['card']}; border: 1px solid rgba(0,34,68,.10); border-radius: 4px;
-            border-top: 3px solid {THEME['heading']}; padding: 16px 18px; height: 100%;
+            background: rgba(0,159,218,.10); border: 0; border-radius: 4px; padding: 16px 18px; height: 100%;
         }}
+        .sfp-stat.alert {{ background: rgba(208,59,59,.09); }} .sfp-stat.watch {{ background: rgba(247,184,65,.13); }} .sfp-stat.ok {{ background: rgba(0,169,150,.10); }}
         .sfp-stat-top {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }}
-        .sfp-stat-icon {{
-            width: 28px; height: 28px; border-radius: 3px; flex-shrink: 0;
-            display: flex; align-items: center; justify-content: center; font-size: {fs(13)};
-        }}
+        .sfp-stat-icon {{ display: none; }}
         .sfp-stat-label {{ font-size: {fs(12.5)}; font-weight: 600; color: {THEME['ink2']}; }}
         .sfp-stat-value {{ font-size: {fs(25)}; font-weight: 700; color: {THEME['heading']}; line-height: 1.15; letter-spacing: -0.01em; }}
         .sfp-stat-caption {{ font-size: {fs(11.5)}; color: {THEME['muted']}; margin-top: 6px; line-height: 1.45; }}
         .sfp-stat-caption b.up {{ color: {THEME['green_ink']}; }}
         .sfp-stat-caption b.down {{ color: {THEME['red_ink']}; }}
+
+        /* ---------------- Key figures (top of every page) ---------------- */
+        /* boxes take a light, see-through wash of their status colour, no outline; the status
+           shows as coloured text so a box never carries two coloured shapes (as the HTML version) */
+        .sfp-strip {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 4px 0 18px; }}
+        .sfp-tile {{ border-radius: 4px; padding: 14px 16px; display: grid; gap: 5px; align-content: start; background: rgba(0,159,218,.10); }}
+        .sfp-tile.alert {{ background: rgba(208,59,59,.09); }}
+        .sfp-tile.watch {{ background: rgba(247,184,65,.13); }}
+        .sfp-tile.ok {{ background: rgba(0,169,150,.10); }}
+        .sfp-tile-top {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }}
+        .sfp-tile-label {{ font-size: {fs(12.5)}; font-weight: 600; color: {THEME['ink2']}; line-height: 1.3; }}
+        .sfp-tile-st {{ font-size: {fs(11.5)}; font-weight: 700; white-space: nowrap; }}
+        .sfp-tile-st.alert {{ color: {THEME['red_ink']}; }} .sfp-tile-st.watch {{ color: {THEME['amber_ink']}; }} .sfp-tile-st.ok {{ color: {THEME['green_ink']}; }}
+        .sfp-tile-value {{ font-size: {fs(25)}; font-weight: 700; color: {THEME['heading']}; line-height: 1.15; letter-spacing: -0.01em; overflow-wrap: anywhere; }}
+        .sfp-tile-value small {{ font-size: {fs(12.5)}; font-weight: 400; color: {THEME['ink2']}; margin-left: 4px; letter-spacing: 0; }}
+        .sfp-tile-sub {{ font-size: {fs(11.5)}; color: {THEME['muted']}; line-height: 1.45; }}
+        @media (max-width: 560px) {{ .sfp-strip {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }} .sfp-tile-value {{ font-size: {fs(20)}; }} }}
+        .sfp-hero {{ background: {THEME['card']}; border-radius: 4px; padding: 16px 18px; border: 1px solid rgba(0,34,68,.10); margin-bottom: 12px; }}
+        .sfp-hero-label {{ font-size: {fs(12.5)}; font-weight: 600; color: {THEME['ink2']}; }}
+        .sfp-hero-value {{ font-size: {fs(42)}; font-weight: 700; color: {THEME['heading']}; line-height: 1.05; letter-spacing: -0.02em; margin: 6px 0 10px; }}
+        .sfp-hero-value small {{ font-size: {fs(13)}; font-weight: 400; color: {THEME['ink2']}; letter-spacing: 0; margin-left: 8px; }}
+        .sfp-zonebar {{ display: flex; height: 12px; border-radius: 2px; overflow: hidden; gap: 2px; margin-bottom: 8px; }}
+        .sfp-zonelegend {{ display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: {fs(12)}; color: {THEME['ink2']}; margin-bottom: 8px; }}
+        .sfp-2col {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }}
+        @media (max-width: 560px) {{ .sfp-2col {{ grid-template-columns: minmax(0, 1fr); }} }}
 
         /* ---------------- Top filter bar ---------------- */
         .sfp-topbar {{
@@ -222,15 +244,20 @@ def header(eyebrow, title, subtitle, meta=None):
     )
 
 
+_STATUS_OF_COLOR = {"red": "alert", "amber": "watch", "green": "ok"}
+STATUS_TEXT = {"alert": "■ Alert", "watch": "▲ Watch", "ok": "● Good"}
+
+
 def stat_card(icon, color_key, label, value, caption=""):
-    """color_key: one of 'blue', 'green', 'amber', 'red', 'gold', 'purple',
-    'chart_navy' (see config.THEME). Returns an HTML string — wrap the call
-    in st.markdown(..., unsafe_allow_html=True). Tile style: navy top rule,
-    label on the left, a small tinted icon on the right, then the value."""
+    """color_key: 'red' / 'amber' / 'green' give the box a light wash of that
+    status colour, anything else a light blue wash. `icon` is kept for
+    compatibility but no longer drawn. Returns an HTML string — wrap the call
+    in st.markdown(..., unsafe_allow_html=True)."""
     bg = THEME.get(f"{color_key}_bg", THEME["blue_bg"])
     fg = THEME.get(f"{color_key}_ink", THEME.get(color_key, THEME["blue"]))
+    status = _STATUS_OF_COLOR.get(color_key, "")
     return (
-        f'<div class="sfp-stat">'
+        f'<div class="sfp-stat {status}">'
         f'<div class="sfp-stat-top">'
         f'<div class="sfp-stat-label">{label}</div>'
         f'<div class="sfp-stat-icon" style="background:{bg};color:{fg}">{icon}</div>'
@@ -253,3 +280,33 @@ def summary_box(text):
         f'not written by a person</span>{text}</div>',
         unsafe_allow_html=True,
     )
+
+
+def tile_html(label, value, small="", sub="", status=None, status_text=None):
+    """One key-figure box. status: 'alert' / 'watch' / 'ok' / None (neutral)."""
+    st_html = f'<span class="sfp-tile-st {status}">{status_text or STATUS_TEXT.get(status, "")}</span>' if status else ""
+    small_html = f"<small>{small}</small>" if small else ""
+    return (
+        f'<div class="sfp-tile {status or ""}"><div class="sfp-tile-top"><span class="sfp-tile-label">{label}</span>{st_html}</div>'
+        f'<div class="sfp-tile-value">{value}{small_html}</div><div class="sfp-tile-sub">{sub}</div></div>'
+    )
+
+
+def stat_strip(tiles, container=None):
+    """The row of key figures at the top of a page. tiles: dicts with keys
+    label, value, small, sub, status, status_text (None entries are skipped).
+    container: an st.container() made earlier, so the row can sit at the top
+    of the page while its numbers are computed further down."""
+    html = "".join(tile_html(**t) for t in tiles if t)
+    target = container if container is not None else st
+    target.markdown(f'<div class="sfp-strip">{html}</div>', unsafe_allow_html=True)
+
+
+def tile(label, value, small="", sub="", status=None, status_text=None):
+    """Shorthand for one stat_strip entry."""
+    return dict(label=label, value=value, small=small, sub=sub, status=status, status_text=status_text)
+
+
+def count_tile(label, n, of, sub="", bad="alert"):
+    """A count with 'Alert' (or 'Watch') when it is above zero, 'Good' when zero."""
+    return tile(label, str(n), f"of {of}", sub, status=bad if n else "ok")

@@ -5,6 +5,7 @@ import streamlit as st
 import calculations
 import config as cfg
 from config import BAR_CORNER_RADIUS, CHART_LAYOUT, GLOSSARY, LGD_SLIDER_DEFAULT, LGD_SLIDER_MAX, LGD_SLIDER_MIN, SECTOR_LGD_REFERENCE, THEME, ZONE_COLORS
+from utils import overview as ov
 from utils import theme
 from utils.charts import MINIMAL_MODEBAR_CONFIG, download_row
 from utils.charts import wrap_label as charts_wrap_label
@@ -33,6 +34,8 @@ if df.empty:
 
 df = calculations.compute_zem_components(df)
 has_years = df["Year"].nunique() > 1
+# key figures sit at the top of the page; they are filled in once LGD, EAD and GDP are set below
+strip_box = st.container()
 
 years = sorted(df["Year"].unique().tolist()) if has_years else [df["Year"].iloc[0]]
 sel_year = st.selectbox("Year", years, index=len(years) - 1)
@@ -97,14 +100,6 @@ total_efc = result["EFC"].sum()
 currency = df["Currency"].iloc[0] if "Currency" in df.columns else ""
 n_distress = (result["Zone"] == "Distress").sum()
 
-s1, s2, s3 = st.columns(3)
-with s1:
-    st.markdown(theme.stat_card("💰", "red", f"Aggregate EFC ({currency})", f"{total_efc:,.0f}", GLOSSARY["EFC"]), unsafe_allow_html=True)
-with s2:
-    st.markdown(theme.stat_card("⚠️", "amber", "SOEs in Distress zone", f"{n_distress}", GLOSSARY["Zone"]), unsafe_allow_html=True)
-with s3:
-    st.markdown(theme.stat_card("Σ", "blue", "SOEs assessed", f"{result['Entity'].nunique()}"), unsafe_allow_html=True)
-st.markdown("<br>", unsafe_allow_html=True)
 
 # --- Optional GDP context, shared with the Shock Scenarios page's GDP field ---
 st.markdown('<div class="sfp-card"><div class="sfp-title">Fiscal (GDP) context — optional</div>', unsafe_allow_html=True)
@@ -118,6 +113,28 @@ base_gdp = st.number_input(
 st.markdown("</div>", unsafe_allow_html=True)
 
 unit_label = "% of GDP" if base_gdp else f"EFC ({currency})"
+
+# --- key figures (top of the page) ---
+_ranked = result.sort_values("EFC", ascending=False)
+_n = result["Entity"].nunique()
+_scale = ov.unit_scale(df)
+_top = _ranked.iloc[0] if len(_ranked) else None
+_top3 = float(_ranked["EFC"].head(3).sum())
+_share = total_efc / base_gdp if base_gdp else float("nan")
+_lgd_txt = f"LGD {lgd_pct}%" if lgd_mode == "Single LGD for all SOEs" else "LGD per SOE"
+_ead_txt = ("EAD guaranteed debt where reported, else " if ead_basis == "guaranteed_debt" else "EAD ") + f"{ead_share:.0%} of liabilities"
+theme.stat_strip([
+    theme.tile("Aggregate EFC", ov.money(total_efc, _scale), currency, f"{sel_year} · {ov.plural(_n, 'SOE')} · {_lgd_txt} · {_ead_txt}"),
+    theme.tile("EFC / GDP", ov.pct_small(_share) if base_gdp else "—", "",
+               f"watch from {cfg.REPORT_EFC_GDP_WATCH:.1%}, alert from {cfg.REPORT_EFC_GDP_ALERT:.1%} (illustrative)" if base_gdp else "Enter GDP below",
+               status=ov.efc_gdp_status(_share)),
+    theme.tile("Largest exposure", ov.money(_top["EFC"], _scale), currency,
+               f"{_top['Entity']} · {(_top['EFC'] / total_efc * 100) if total_efc else 0:.0f}% of the total · PD {ov.pct(_top['PD'], 2)}",
+               status=ov.ZONE_STATUS.get(_top["Zone"]), status_text=ov.ZONE_TEXT.get(_top["Zone"])) if _top is not None else None,
+    theme.tile("Top-3 concentration", ov.pct(_top3 / total_efc if total_efc else float("nan"), 0), "",
+               "of EFC in " + ", ".join(_ranked["Entity"].head(3))) if _n > 3 else None,
+    theme.count_tile("SOEs in distress", int(n_distress), _n, f"Z-EM ≤ {cfg.Z_DISTRESS_CUTOFF}"),
+], container=strip_box)
 
 col_bench, col_sens = st.columns(2)
 

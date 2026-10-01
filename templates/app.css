@@ -12,6 +12,7 @@
   --good: #00a996; --warn: #f7b841; --crit: #d03b3b;
   --good-ink: #00796b; --warn-ink: #8a5d00; --crit-ink: #b12f2f;
   --good-wash: rgba(0, 169, 150, .10); --warn-wash: rgba(247, 184, 65, .20); --crit-wash: rgba(208, 59, 59, .09);
+  --warn-wash-soft: rgba(247, 184, 65, .13);
   --flag-ink: #1c2530;
   --ring: rgba(0, 34, 68, .10);
   --f-sans: "Open Sans", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
@@ -28,6 +29,7 @@
     --prev: #5c6f83; --neg: #e66767;
     --good-ink: #2fcfb9; --warn-ink: #f7b841; --crit-ink: #ef7d7d;
     --good-wash: rgba(0, 169, 150, .18); --warn-wash: rgba(247, 184, 65, .18); --crit-wash: rgba(208, 59, 59, .22);
+    --warn-wash-soft: rgba(247, 184, 65, .12);
     --flag-ink: #1c2530;
     --ring: rgba(255, 255, 255, .08);
     color-scheme: dark;
@@ -43,6 +45,7 @@
   --prev: #5c6f83; --neg: #e66767;
   --good-ink: #2fcfb9; --warn-ink: #f7b841; --crit-ink: #ef7d7d;
   --good-wash: rgba(0, 169, 150, .18); --warn-wash: rgba(247, 184, 65, .18); --crit-wash: rgba(208, 59, 59, .22);
+  --warn-wash-soft: rgba(247, 184, 65, .12);
   --flag-ink: #1c2530;
   --ring: rgba(255, 255, 255, .08);
   color-scheme: dark;
@@ -188,6 +191,15 @@ details.plain > summary { font-size: 12.5px; color: var(--accent-strong); }
 .tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; min-width: 0; }
 @media (max-width: 520px) { .tiles { grid-template-columns: minmax(0, 1fr); } }
 .tile { display: grid; gap: 6px; align-content: start; border-top: 3px solid var(--heading); }
+/* key-figure boxes: a translucent wash of the status colour over the card, no outline; the status chip
+   becomes plain coloured text so the box does not carry two coloured shapes */
+.card.tile { border: 0; --tint: var(--accent-wash); background: linear-gradient(var(--tint), var(--tint)), var(--surface); }
+.card.tile.t-alert { --tint: var(--crit-wash); }
+.card.tile.t-watch { --tint: var(--warn-wash-soft); }
+.card.tile.t-ok { --tint: var(--good-wash); }
+.card.tile.t-neutral { --tint: var(--accent-wash); }
+.card.tile .st { background: transparent; padding: 0; }
+.card.tile .st.alert { color: var(--crit-ink); } .card.tile .st.watch { color: var(--warn-ink); } .card.tile .st.ok { color: var(--good-ink); }
 .tile-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .tile-label { font-size: 13px; color: var(--ink-2); font-weight: 600; }
 .tile-value { font-size: 28px; font-weight: 700; line-height: 1.1; letter-spacing: -.01em; color: var(--heading); overflow-wrap: anywhere; }
@@ -344,6 +356,33 @@ g.row:hover .bar.neg { fill: var(--neg); filter: brightness(.9); }
 .steps { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 13px; }
 .steps a { color: var(--accent-strong); font-weight: 600; }
 .load-error { margin: 24px 0; padding: 12px 14px; background: var(--crit-wash); border-radius: 3px; }
+
+/* key figures at the top of every tab */
+.statstrip { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 0 0 16px; }
+.statstrip:empty { display: none; }
+.statstrip .tile { padding: 14px 16px; }
+.statstrip .tile-value { font-size: 26px; }
+.statstrip .tile-sub { font-size: 12px; }
+@media (max-width: 560px) {
+  .statstrip { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .statstrip .tile { padding: 10px 12px; gap: 4px; }
+  .statstrip .tile-label { font-size: 12px; }
+  .statstrip .tile-value { font-size: 21px; }
+  .statstrip .tile-sub { font-size: 11px; }
+}
+
+/* home: load data (left half) and the portfolio overview (right half) */
+.home-top { align-items: stretch; }
+.home-top > .s6 > .upload-card { height: 100%; }
+.hero.compact { gap: 10px; }
+.hero.compact .hero-value { font-size: 44px; }
+.upload-card.stacked .upl-grid { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.upload-card.stacked .upl-side { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 12px; }
+.upload-card.stacked .ds-list { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+.upload-card.stacked .ds { flex-direction: column; align-items: flex-start; gap: 1px; }
+.upload-card.stacked .dropzone.big { padding: 18px 14px; }
+.upl-more-card { margin-top: 16px; padding-top: 6px; padding-bottom: 10px; }
+.upl-more-card > details.plain:first-child { margin-top: 0; }
 
 /* header upload shortcut */
 .band-right { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 12px; }

@@ -4,7 +4,9 @@ import streamlit as st
 
 import calculations
 from config import BAR_CORNER_RADIUS, CATEGORY_LABELS, CATEGORY_ORDER, CHART_LAYOUT, KPI_CATEGORIES, KPI_THRESHOLDS, THEME
+from utils import overview as ov
 from utils import theme
+from utils.portfolio import latest_per_entity
 from utils.charts import MINIMAL_MODEBAR_CONFIG, add_smooth_line, year_axis
 from utils.filters import render_filters
 
@@ -52,6 +54,40 @@ if not all_available:
         unsafe_allow_html=True,
     )
     st.stop()
+
+
+# ------------------------------------------------------------------ #
+# Key figures (latest year per SOE within the filters and years)
+# ------------------------------------------------------------------ #
+_latest = latest_per_entity(df)
+_n = len(_latest)
+_many = sum(1 for _, r in _latest.iterrows()
+            if sum(ov.kpi_status(r, k) == "alert" for k in all_available) >= -(-len(all_available) // 2))
+
+
+def _median_tile(key, label):
+    if key not in all_available:
+        return None
+    vals = _latest[key].dropna()
+    if vals.empty:
+        return theme.tile(label, "n/a", "", "no SOE has this ratio")
+    v = float(vals.median())
+    status = ov.RAG_STATUS.get(calculations.classify(v, key)[0])
+    na = _n - len(vals)
+    return theme.tile(label, ov.kpi_fmt(key, v), "", f"median of {ov.plural(len(vals), 'SOE')}{f' ({na} n/a)' if na else ''} · {ov.cut_text(key)}", status=status)
+
+
+_grants = None
+if "grants_to_revenue" in all_available:
+    _grants = int((_latest["grants_to_revenue"] > KPI_THRESHOLDS["grants_to_revenue"]["red_cut"]).sum())
+theme.stat_strip([
+    theme.count_tile("SOEs with most KPIs in alert", _many, _n, f"half or more of the {len(all_available)} ratios in alert · latest year"),
+    _median_tile("operating_margin", "Median operating margin"),
+    _median_tile("current_ratio", "Median current ratio"),
+    _median_tile("debt_to_ebitda", "Median debt / EBITDA"),
+    None if _grants is None else theme.count_tile("Grant-dependent SOEs", _grants, _n,
+                                                  f"grants above {KPI_THRESHOLDS['grants_to_revenue']['red_cut'] * 100:.0f}% of revenue", bad="watch"),
+])
 
 
 def _kpi_title(spec):

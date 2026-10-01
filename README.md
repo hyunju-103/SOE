@@ -132,6 +132,17 @@ file uses its own seeded random generator, so individual draws differ from
 numpy's, but percentiles agree within sampling error (checked by the parity
 script).
 
+## Page layout
+
+Every page opens with a row of key figures (counts, medians, totals) in
+boxes with a light wash of their status colour — red alert, amber watch,
+green good, blue for plain totals — and the detail underneath. On Home the
+data loader takes the left half and the portfolio overview the right half.
+The HTML version builds the row in `templates/app.js`; the classic Python
+pages use `utils/theme.stat_strip` with the numbers from `utils/overview.py`
+(the standard stress test, KPI status with suppressed ratios as alerts, the
+portfolio overview), so both show the same figures.
+
 ## Charts
 
 Every line chart — in the HTML version and on the Python pages — is a smooth
