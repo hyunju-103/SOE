@@ -449,6 +449,11 @@ CHART_LAYOUT = dict(
 BAR_CORNER_RADIUS = 3
 LINE_SHAPE = "linear"
 LINE_SMOOTHING = 0.0
+# Every line chart is drawn as a smooth curve through the data points: a cardinal
+# spline (tension × the Catmull-Rom tangent, natural ends). 1.0 = Catmull-Rom,
+# lower = tighter curve with less overshoot between points. Used by
+# utils/charts.smooth_xy (Plotly pages) and templates/app.js (HTML version).
+LINE_SMOOTH_TENSION = 0.75
 
 # ---------------------------------------------------------------------------
 # Plain-language definitions — used for hover tooltips (ⓘ icons) and the

@@ -371,6 +371,30 @@
     });
     box.replaceChildren(svg);
   }
+  /** Smooth path through points [[x, y], ...] (x increasing or decreasing): a cardinal spline drawn as cubic
+   *  Bézier segments. It passes through every data point with no corners; the tangent at each point follows the
+   *  neighbouring points (SMOOTH_TENSION × the Catmull-Rom tangent), and the ends are natural. Between two
+   *  points the curve is for reading the trend only — the values are the ones at the points. */
+  const SMOOTH_TENSION = CFG.LINE_SMOOTH_TENSION ?? 0.75;
+  function smoothPath(pts, move = true) {
+    const n = pts.length;
+    if (!n) return "";
+    const P = (p) => `${+p[0].toFixed(2)},${+p[1].toFixed(2)}`;
+    if (n === 1) return (move ? "M" : "L") + P(pts[0]);
+    if (n === 2) return (move ? "M" : "L") + P(pts[0]) + "L" + P(pts[1]);
+    const h = [], m = [];
+    for (let i = 0; i < n - 1; i++) { h[i] = pts[i + 1][0] - pts[i][0]; m[i] = h[i] ? (pts[i + 1][1] - pts[i][1]) / h[i] : 0; }
+    const t = new Array(n);
+    for (let i = 1; i < n - 1; i++) { const dx = pts[i + 1][0] - pts[i - 1][0]; t[i] = dx ? SMOOTH_TENSION * (pts[i + 1][1] - pts[i - 1][1]) / dx : 0; }
+    t[0] = (3 * m[0] - t[1]) / 2;
+    t[n - 1] = (3 * m[n - 2] - t[n - 2]) / 2;
+    let d = (move ? "M" : "L") + P(pts[0]);
+    for (let i = 0; i < n - 1; i++) {
+      const [x0, y0] = pts[i], [x1, y1] = pts[i + 1], k = h[i] / 3;
+      d += `C${P([x0 + k, y0 + k * t[i]])} ${P([x1 - k, y1 - k * t[i + 1]])} ${P([x1, y1])}`;
+    }
+    return d;
+  }
   /** line chart over index positions; series {vals, cls, dot, label}; opt {zones, hlines, band, active, yFmt, h, xLab, tip, endLabel} */
   function lines(box, xs, series, opt = {}) {
     const W = widthOf(box), L = opt.L || 50, R = opt.R || 48, T = 12, B = 32, H = opt.h || Math.round(Math.min(300, Math.max(210, W * 0.46)));
@@ -399,13 +423,16 @@
     (opt.band || []).forEach((b) => {
       const idx = b.hi.map((v, i) => i).filter((i) => ok(b.hi[i]) && ok(b.lo[i])); // skip years where a band edge is missing
       if (idx.length < 2) return;
-      const pts = idx.map((i) => `${x(i)},${y(b.hi[i])}`).concat(idx.slice().reverse().map((i) => `${x(i)},${y(b.lo[i])}`));
-      svgEl("polygon", { points: pts.join(" "), class: b.cls }, svg);
+      const top = idx.map((i) => [x(i), y(b.hi[i])]), bottom = idx.slice().reverse().map((i) => [x(i), y(b.lo[i])]);
+      svgEl("path", { d: smoothPath(top) + smoothPath(bottom, false) + "Z", class: b.cls }, svg);
     });
     const dense = n > (opt.maxDots || 15); // long series: dot the latest point only
     series.forEach((s) => {
-      let d = "", prev = false; // a missing value breaks the line instead of bridging it
-      s.vals.forEach((v, i) => { if (ok(v)) { d += `${prev ? "L" : "M"}${x(i)},${y(v)}`; prev = true; } else prev = false; });
+      // smooth curve through the points; a missing value breaks the line instead of bridging it
+      const segs = []; let cur = [];
+      s.vals.forEach((v, i) => { if (ok(v)) cur.push([x(i), y(v)]); else if (cur.length) { segs.push(cur); cur = []; } });
+      if (cur.length) segs.push(cur);
+      const d = segs.map((sg) => smoothPath(sg)).join("");
       if (d) svgEl("path", { d, class: s.cls }, svg);
       let lastOk = -1; s.vals.forEach((v, i) => { if (ok(v)) lastOk = i; });
       if (s.dot) s.vals.forEach((v, i) => {
@@ -600,6 +627,12 @@
     try { history.replaceState(null, "", "#view-" + id); } catch (e) { /* hash is optional */ }
   }
   document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => { showTab(b.dataset.tab); window.scrollTo({ top: 0 }); }));
+  const bandUp = document.getElementById("bandUpload");
+  if (bandUp) bandUp.addEventListener("click", () => {
+    showTab("home"); window.scrollTo({ top: 0 });
+    const c = document.getElementById("uploadCard");
+    if (c) { c.classList.remove("flash"); void c.offsetWidth; c.classList.add("flash"); const z = c.querySelector("label.btn"); if (z) z.focus(); }
+  });
   function rebuild() { const root = document.getElementById(S.tab); pages[S.tab].build(root); pages[S.tab].render(); }
 
   /* =====================================================================
@@ -669,7 +702,7 @@
       this.H = H;
       H.hero = el("div", { class: "card s5 hero" });
       H.tiles = el("div", { class: "s7 tiles" });
-      H.data = card("Data", "One row per SOE-year, raw financial statement fields. Every ratio and score is computed from them.", null, "top");
+      H.upload = el("div", { class: "card top upload-card", id: "uploadCard" });
       H.dq = card("Data quality and provenance", "Where the numbers come from, as far as the file says", null, "top");
       H.about = card("How it works", null, null);
       const mods = el("div", { class: "modules" }, MODULES.map(([name, status, k, text]) => el("div", { class: "module" + (k === "ok" ? " on" : "") },
@@ -677,41 +710,57 @@
       root.replaceChildren(
         pageHead("SOE FISCAL RISK TOOL", "SOE Fiscal Risk Dashboard",
           "A layered framework for state-owned enterprises: financial diagnostics (KPI Dashboard), distress signal (Altman Z-EM), fiscal exposure to the sovereign (Expected Fiscal Cost), dynamic shock simulation (Shock Scenarios), government support, trigger rules (Early Warning), and a five-section Report."),
+        H.upload,
+        el("h3", { class: "sec-label" }, "Portfolio overview"),
         el("div", { class: "grid" }, H.hero, H.tiles),
         el("h3", { class: "sec-label" }, "Where this tool sits in the SOE fiscal-risk toolkit"), mods,
-        el("div", { class: "grid", style: "margin-top:16px" }, el("div", { class: "s7" }, H.data.root), el("div", { class: "s5 stack" }, H.dq.root, H.about.root)),
+        el("div", { class: "grid", style: "margin-top:16px" }, el("div", { class: "s7" }, H.dq.root), el("div", { class: "s5" }, H.about.root)),
       );
-      this.buildData(H.data.body);
+      this.buildUpload(H.upload);
       this.buildQuality(H.dq.body);
       this.buildAbout(H.about.body);
     },
-    buildData(body) {
-      const status = el("div", { class: "alert-box hint" });
-      status.appendChild(el("span", {}, el("b", {}, S.label || "Loaded data"), ` · ${pl(S.names.length, "SOE")}, ${S.rows.length} SOE-year rows, ${S.years[0]}–${last(S.years)}`));
-      const btns = el("div", { class: "btn-row", style: "margin-top:12px" });
-      if (DATASETS.report && S.key !== "report") btns.appendChild(el("button", { class: "btn", type: "button", onclick: () => loadDataset(DATASETS.report.rows, DATASETS.report.label, DATASETS.report.example, "report") }, "Back to: " + DATASETS.report.label));
-      if (DATASETS.sample) btns.appendChild(el("button", { class: "btn", type: "button", onclick: () => loadDataset(DATASETS.sample.rows, DATASETS.sample.label, true, "sample") }, "Use example data (SOE A — Energy, SOE B — Transport)"));
-      if (DATASETS.demo) btns.appendChild(el("button", { class: "btn", type: "button", onclick: () => loadDataset(DATASETS.demo.rows, DATASETS.demo.label, true, "demo") }, "Use demo portfolio (8 SOEs, 7 sectors)"));
-      if (DATASETS.long) btns.appendChild(el("button", { class: "btn", type: "button", onclick: () => loadDataset(DATASETS.long.rows, DATASETS.long.label, true, "long") }, "Try a long panel: 30 SOEs × 20 years (test data)"));
+    /** top of Home: load a file, or switch to one of the built-in datasets */
+    buildUpload(box) {
       const msg = el("div");
-      const input = el("input", { type: "file", id: "upload", accept: ".csv,.xlsx,.xls", style: "max-width:100%" });
-      const dz = el("div", { class: "dropzone" }, el("label", { class: "lbl", for: "upload" }, "Upload your own data — CSV or Excel, one row per SOE-year"), input,
-        el("small", { class: "muted" }, "Column names are matched to the standard schema (exact names, known synonyms, close spellings) and the mapping is shown for review. The file is read in this browser only; nothing is sent anywhere. Excel files need an internet connection the first time (the reader loads from cdnjs)."));
+      const input = el("input", { type: "file", id: "upload", accept: ".csv,.xlsx,.xls,.txt", class: "sr-file" });
+      const pick = el("label", { class: "btn primary", for: "upload" }, "Choose a file");
+      const dz = el("div", { class: "dropzone big", id: "dropzone" },
+        el("div", { class: "dz-icon", "aria-hidden": "true" }, "⬆"),
+        el("div", { class: "dz-text" }, el("b", {}, "Drop a CSV or Excel file here"), el("span", { class: "muted" }, " or "), pick, input),
+        el("small", { class: "muted" }, "One row per SOE-year. Column names are matched to the standard schema, numbers such as 1,234 · (1,234) · 35% are read, and title rows above the table are skipped. The file is read in this browser only; nothing is sent anywhere."));
       const handle = (file) => readUpload(file, msg);
       input.addEventListener("change", () => { const f = input.files[0]; if (f) handle(f); input.value = ""; });
       dz.addEventListener("dragover", (e) => { e.preventDefault(); dz.classList.add("over"); });
       dz.addEventListener("dragleave", () => dz.classList.remove("over"));
       dz.addEventListener("drop", (e) => { e.preventDefault(); dz.classList.remove("over"); if (e.dataTransfer.files[0]) handle(e.dataTransfer.files[0]); });
-      const tmpl = el("div", { class: "btn-row", style: "margin-top:10px" }, el("span", { class: "chips-label" }, "Standard template"),
-        dataButtons(templateCSV, "soe_tool_template.csv", "template"), dataButtons(dictionaryCSV, "soe_variable_dictionary.csv", "dictionary"));
+      // the page may open on a copy of a built-in dataset ("report"); mark that one as the active choice
+      const copyOf = DATASETS.report ? ["sample", "demo", "long"].find((k) => DATASETS[k] && DATASETS[k].label === DATASETS.report.label) : null;
+      const active = S.key === "report" && copyOf ? copyOf : S.key;
+      const ds = (key, label, sub) => DATASETS[key] ? el("button", { class: "ds" + (active === key ? " on" : ""), type: "button", "aria-pressed": String(active === key), onclick: () => loadDataset(DATASETS[key].rows, DATASETS[key].label, DATASETS[key].example, key) }, el("b", {}, label), el("span", {}, sub)) : null;
+      const side = el("div", { class: "upl-side" },
+        el("div", { class: "lbl" }, "Now showing"),
+        el("div", { class: "now" }, el("b", {}, S.label || "Loaded data"), el("span", { class: "muted" }, `${pl(S.names.length, "SOE")} · ${S.rows.length} SOE-year rows · ${S.years.length > 1 ? S.years[0] + "–" + last(S.years) : S.years[0]}`)),
+        el("div", { class: "lbl", style: "margin-top:12px" }, "Or try built-in data"),
+        el("div", { class: "ds-list" },
+          DATASETS.report && !copyOf ? ds("report", "Report data", DATASETS.report.label) : null,
+          ds("sample", "Example", "SOE A and B · 2020–2024"), ds("demo", "Demo portfolio", "8 SOEs · 7 sectors"), ds("long", "Long panel", "30 SOEs · 20 years")),
+        el("div", { class: "lbl", style: "margin-top:12px" }, "Standard template"),
+        el("div", { class: "btn-row" }, dataButtons(templateCSV, "soe_tool_template.csv", "template"), dataButtons(dictionaryCSV, "soe_variable_dictionary.csv", "dictionary")));
+      const note = S.uploadNote ? el("div", { class: "alert-box ok" }, S.uploadNote) : null;
+      // the wide sections (mapping table, columns, preview) run under both columns, full width
+      put(box, el("div", { class: "upl-grid" }, el("div", { class: "upl-main" }, el("h3", {}, "Load data"), dz, note, msg), side),
+        el("div", { class: "upl-more" }, S.mapping ? mappingDetails(S.mapping) : null, ...this.dataDetails()));
+    },
+    /** "Required and optional columns" and "Data preview", collapsed, under the upload box */
+    dataDetails() {
       const cols = el("details", { class: "plain" }, el("summary", {}, "Required and optional columns"),
         el("p", { class: "note" }, el("b", {}, "Required: "), CFG.REQUIRED_COLUMNS.join(", ") + "."),
         el("p", { class: "note" }, el("b", {}, "Optional, used when present: "), "Short Term Debt, FX Debt, Fuel Cost and the exposure shares (bottom-up shock exposures); Government Guaranteed Debt (observed EAD); Source File, Source Page, Audit Status, Extraction Method and Data Quality Flag (provenance). The full list with synonyms is on the ", go("assumptions", "Assumptions & sources"), " tab."));
       const prevCols = ["Entity", "Year", "Sector", "Revenues", "Operating Profits (EBIT)", "Net Income", "Total Assets", "Total Liabilities", "Equity", "Government Grants"];
       const preview = el("details", { class: "plain" }, el("summary", {}, `Data preview (${S.rows.length} rows)`),
         simpleTable(prevCols, S.rows.slice(0, 300).map((r) => prevCols.map((c) => (NUMCOLS.has(c) && c !== "Year" ? money(r[c]) : String(r[c] ?? "")))), { tall: true, right: (i) => i >= 3 }));
-      const note = S.uploadNote ? el("div", { class: "alert-box ok", style: "margin-top:10px" }, S.uploadNote) : null;
-      put(body, status, btns, el("hr", { class: "divider" }), dz, note, msg, S.mapping ? mappingDetails(S.mapping) : null, tmpl, cols, preview);
+      return [cols, preview];
     },
     buildQuality(body) {
       const rows = S.rows, n = rows.length, latest = latestOf(S.en);

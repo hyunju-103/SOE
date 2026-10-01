@@ -6,7 +6,7 @@ import calculations
 import config
 import shocks
 from utils import theme
-from utils.charts import MINIMAL_MODEBAR_CONFIG, download_row
+from utils.charts import MINIMAL_MODEBAR_CONFIG, download_row, add_smooth_line, band_trace, year_axis
 
 theme.header(
     "DYNAMIC SIMULATION",
@@ -224,11 +224,10 @@ if view_mode == "Single scenario":
     col_z, col_gdp = st.columns(2)
     with col_z:
         st.markdown('<div class="sfp-card"><div class="sfp-title">Z-EM trajectory</div>', unsafe_allow_html=True)
-        fig = go.Figure(go.Scatter(
-            x=scenario["Calendar Year"].astype(str), y=scenario["Z_EM"], mode="lines+markers",
-            line=dict(color=config.THEME["chart_navy"], shape=config.LINE_SHAPE, smoothing=config.LINE_SMOOTHING),
-            marker=dict(color=config.THEME["gold"], size=8),
-        ))
+        fig = go.Figure()
+        add_smooth_line(fig, scenario["Calendar Year"].astype(int), scenario["Z_EM"], color=config.THEME["chart_navy"],
+                        marker_color=config.THEME["gold"], marker_size=8, hovertemplate="%{x}: Z″ %{y:.2f}<extra></extra>")
+        year_axis(fig, scenario["Calendar Year"].astype(int))
         fig.add_hline(y=2.6, line_dash="dot", line_color=config.THEME["green"], annotation_text="Safe")
         fig.add_hline(y=1.1, line_dash="dot", line_color=config.THEME["red"], annotation_text="Distress")
         fig.update_layout(**{**config.CHART_LAYOUT, "height": 290, "margin": {**config.CHART_LAYOUT["margin"], "t": 28}})
@@ -243,11 +242,10 @@ if view_mode == "Single scenario":
     with col_gdp:
         if base_gdp:
             st.markdown('<div class="sfp-card"><div class="sfp-title">Expected Fiscal Cost / GDP — path over time</div>', unsafe_allow_html=True)
-            fig_gdp = go.Figure(go.Scatter(
-                x=scenario["Calendar Year"].astype(str), y=scenario["EFC_pct_GDP"], mode="lines+markers",
-                line=dict(color=config.THEME["red"], shape=config.LINE_SHAPE, smoothing=config.LINE_SMOOTHING),
-                marker=dict(color=config.THEME["gold"], size=8),
-            ))
+            fig_gdp = go.Figure()
+            add_smooth_line(fig_gdp, scenario["Calendar Year"].astype(int), scenario["EFC_pct_GDP"], color=config.THEME["red"],
+                            marker_color=config.THEME["gold"], marker_size=8, hovertemplate="%{x}: %{y:.2%}<extra></extra>")
+            year_axis(fig_gdp, scenario["Calendar Year"].astype(int))
             fig_gdp.update_layout(**{**config.CHART_LAYOUT, "height": 290, "margin": {**config.CHART_LAYOUT["margin"], "t": 28}})
             fig_gdp.update_layout(title=dict(text=shock_summary, x=0, xanchor="left",
                                               font=dict(size=round(9.5 * config.FONT_SCALE, 1), color=config.THEME["muted"])))
@@ -424,17 +422,11 @@ else:
         )
 
         fig_fan = go.Figure()
-        fig_fan.add_trace(go.Scatter(
-            x=list(efc_path["Calendar Year"].astype(str)) + list(efc_path["Calendar Year"].astype(str))[::-1],
-            y=list(efc_path["p95"]) + list(efc_path["p5"])[::-1],
-            fill="toself", fillcolor=config.THEME["chart_cyan_bg"], line=dict(color="rgba(0,0,0,0)"),
-            showlegend=True, name="5th–95th pct.",
-        ))
-        fig_fan.add_trace(go.Scatter(
-            x=efc_path["Calendar Year"].astype(str), y=efc_path["p50"], mode="lines+markers",
-            line=dict(color=config.THEME["red"], shape=config.LINE_SHAPE, smoothing=config.LINE_SMOOTHING),
-            marker=dict(color=config.THEME["gold"], size=7), name="Median",
-        ))
+        fan_years = efc_path["Calendar Year"].astype(int).tolist()
+        fig_fan.add_trace(band_trace(fan_years, efc_path["p5"].tolist(), efc_path["p95"].tolist(), config.THEME["chart_cyan_bg"], name="5th–95th pct."))
+        add_smooth_line(fig_fan, fan_years, efc_path["p50"], color=config.THEME["red"], marker_color=config.THEME["gold"], marker_size=7,
+                        name="Median", hovertemplate="%{x}: median %{y:.2%}<extra></extra>")
+        year_axis(fig_fan, fan_years)
         fig_fan.update_layout(**{**config.CHART_LAYOUT, "height": 310, "showlegend": True, "margin": {**config.CHART_LAYOUT["margin"], "t": 28}})
         fig_fan.update_layout(title=dict(text=mc_summary, x=0, xanchor="left",
                                           font=dict(size=round(9.5 * config.FONT_SCALE, 1), color=config.THEME["muted"])))

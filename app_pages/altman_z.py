@@ -6,7 +6,7 @@ import narrative
 import config as cfg
 from config import BAR_CORNER_RADIUS, CHART_LAYOUT, GLOSSARY, LINE_SHAPE, LINE_SMOOTHING, THEME, ZONE_COLORS
 from utils import theme, summary
-from utils.charts import MINIMAL_MODEBAR_CONFIG, download_row, wrap_label
+from utils.charts import MINIMAL_MODEBAR_CONFIG, download_row, wrap_label, add_smooth_line, year_axis
 from utils.filters import render_filters
 
 theme.header(
@@ -77,15 +77,15 @@ else:
             st.markdown('<p class="sfp-kpi-desc">No data for this component.</p>', unsafe_allow_html=True)
         else:
             marker_color = THEME["gold"] if key == "Z_EM" else THEME["chart_navy"]
-            fig = go.Figure(go.Scatter(
-                x=dd["Year"].astype(int).astype(str), y=dd[key], mode="lines+markers",
-                line=dict(color=THEME["chart_navy"], width=2.2, shape=LINE_SHAPE, smoothing=LINE_SMOOTHING),
-                marker=dict(size=6, color=marker_color),
-            ))
+            fig = go.Figure()
+            add_smooth_line(fig, dd["Year"].astype(int), dd[key], color=THEME["chart_navy"], marker_color=marker_color, marker_size=6,
+                            hovertemplate="%{x}: %{y:.3f}<extra></extra>")
             if key == "Z_EM":
                 fig.add_hline(y=1.1, line_dash="dash", line_width=1.3, line_color=THEME["red"])
                 fig.add_hline(y=2.6, line_dash="dash", line_width=1.3, line_color=THEME["chart_cyan"])
             _mini_layout(fig)
+            fig.update_xaxes(type="linear")
+            year_axis(fig, dd["Year"].astype(int), max_ticks=6)
             st.plotly_chart(fig, use_container_width=True, config=MINIMAL_MODEBAR_CONFIG, key=f"comp_{key}")
         st.markdown("</div>", unsafe_allow_html=True)
 

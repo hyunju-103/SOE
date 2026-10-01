@@ -132,6 +132,15 @@ file uses its own seeded random generator, so individual draws differ from
 numpy's, but percentiles agree within sampling error (checked by the parity
 script).
 
+## Charts
+
+Every line chart — in the HTML version and on the Python pages — is a smooth
+curve through the data points (a cardinal spline, `config.LINE_SMOOTH_TENSION`
+= 0.75; `templates/app.js` smoothPath and `utils/charts.smooth_xy` draw the
+same curve). The curve passes through every point; between two years it is for
+reading the trend only, and the values are the ones at the points (hover).
+Missing years break the line instead of bridging it.
+
 ## Uploading data
 
 CSV or Excel (.xlsx/.xls), one row per SOE-year. The same reading rules run

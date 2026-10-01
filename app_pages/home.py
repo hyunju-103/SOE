@@ -34,95 +34,7 @@ theme.header(
     meta=_meta,
 )
 
-# ------------------------------------------------------------------ #
-# Toolkit map — where this tool sits in the SOE fiscal-risk toolkit
-# ------------------------------------------------------------------ #
-MODULES = [
-    ("Country Analysis", "This tool", "green", "Upload a country's SOE statements: KPIs, Altman Z-EM, expected fiscal cost, shocks, government support, early warning, report."),
-    ("Global Monitoring", "Prototype", "amber", "Cross-country SOE benchmarking (Pacific monitor first) — needs the standardised multi-country repository."),
-    ("Hidden Subsidies", "Planned", "muted", "Financing advantage over comparable private firms × SOE base; formula and variables to confirm from the reference note."),
-    ("PSO Analysis", "Planned", "muted", "Public service obligations — separating PSO costs from inefficiency; builds on the viability assessment here."),
-    ("Energy Fiscal Risk", "Separate model", "muted", "Tariffs, cost recovery and subsidies in the power sector (Ghana model, other team)."),
-]
-_cards = "".join(
-    f'<div class="sfp-stat" style="padding:12px 14px"><div class="sfp-stat-top" style="margin-bottom:6px">'
-    f'<div class="sfp-stat-label" style="color:{THEME_HEADING};font-weight:700">{name}</div>{theme.status_chip(color, status)}</div>'
-    f'<div class="sfp-stat-caption" style="margin:0">{text}</div></div>'
-    for name, status, color, text in MODULES
-)
-st.markdown(f'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:18px">{_cards}</div>',
-            unsafe_allow_html=True)
-
-# ------------------------------------------------------------------ #
-# Overview stat row
-# ------------------------------------------------------------------ #
-
-if st.session_state.soe_df is not None:
-    full = calculations.compute_zem_components(st.session_state.soe_df)
-    d = latest_per_entity(full)
-    n_soe = d["Entity"].nunique()
-    n_sectors = d["Sector"].nunique() if "Sector" in d.columns else 0
-    distress_n = int((d["Zone"] == "Distress").sum())
-    avg_z = d["Z_EM"].mean() if n_soe else float("nan")
-
-    s1, s2, s3, s4 = st.columns(4)
-    with s1:
-        st.markdown(theme.stat_card("🏛️", "blue", "Total SOEs", n_soe, f"Across {n_sectors} sector(s)"), unsafe_allow_html=True)
-    with s2:
-        st.markdown(theme.stat_card("📊", "purple", "Average Z-EM", f"{avg_z:.2f}", "Portfolio-wide, latest year"), unsafe_allow_html=True)
-    with s3:
-        pct = (distress_n / n_soe * 100) if n_soe else 0
-        st.markdown(
-            theme.stat_card("⚠️", "red", "SOEs in distress", f"{distress_n} / {n_soe}", f"{pct:.0f}% of portfolio (Z-EM ≤ 1.1)"),
-            unsafe_allow_html=True,
-        )
-    with s4:
-        st.markdown(theme.stat_card("🌍", "green", "Coverage", "Multi-sector", "Filter by sector on any page"), unsafe_allow_html=True)
-    st.markdown("<br>", unsafe_allow_html=True)
-
-# ------------------------------------------------------------------ #
-# About
-# ------------------------------------------------------------------ #
-
-with st.expander("About this tool", expanded=st.session_state.soe_df is None):
-    st.markdown(
-        """
-**How it works**
-
-1. **Upload** — a portfolio of SOEs, one row per SOE-year, with raw financial
-   statement fields. The tool computes the Altman Z''-EM components, the
-   score, and every KPI ratio itself from the raw numbers.
-2. **KPI Dashboard** — profitability, liquidity, solvency, and
-   fiscal-dependency ratios, benchmarked against illustrative thresholds.
-3. **Altman Z-EM** — the four Z''-EM components, the score itself,
-   cross-SOE benchmarking, and a distress/grey/safe distribution with an
-   indicative credit-rating cohort.
-4. **Expected Fiscal Cost** — PD × EAD × LGD, PD from each SOE's Z-EM rating band,
-   EAD proxied by Total Liabilities, LGD set by you.
-5. **Shock Scenarios** — fuel, FX, interest rate, revenue, refinancing and
-   government arrears shocks flow through each SOE's own balance-sheet
-   exposures (bottom-up) and compound over a multi-year horizon, with a
-   correlated Monte Carlo option and an Expected Fiscal Cost / GDP path.
-6. **Government Support** — Role × Link support tier and a bounded rating
-   uplift, capped by the sovereign.
-7. **HTML version** — the whole tool, every page, as one HTML file that
-   runs in any browser with no Python: share it, and recipients can run
-   shocks, Monte Carlo and upload their own data.
-
-Every chart in the tool can export its underlying data, and comes with an
-automated plain-language summary generated directly from the numbers on
-screen (not a live AI call).
-
-**Scope.** Test build. Every coefficient and threshold is listed on the
-**Assumptions & sources** page as literature / data-based, user-set, a
-proxy, or a placeholder that still needs a source.
-        """
-    )
-
-with st.expander("Glossary — what the terms mean"):
-    st.markdown('<p class="sfp-hint">Plain-language definitions for the terms used throughout this tool.</p>', unsafe_allow_html=True)
-    rows = "".join(f"<tr><td style='font-weight:700;white-space:nowrap;'>{term}</td><td>{definition}</td></tr>" for term, definition in config.GLOSSARY.items())
-    st.markdown(f"<table class='sfp-table sfp-table-wrap'><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
+# Loading data comes first: upload, built-in datasets, template, preview.
 
 # ------------------------------------------------------------------ #
 # Data upload
@@ -219,12 +131,12 @@ st.markdown(
     'audit_status, extraction_method, data_quality_flag) keep the audit trail.</p>',
     unsafe_allow_html=True,
 )
-st.markdown(
-    f'<p class="sfp-hint">Required columns: {", ".join(config.REQUIRED_COLUMNS)}. '
-    f"Optional shock-module fields ({', '.join(config.OPTIONAL_SHOCK_COLUMNS)}) unlock more "
-    f"precision on the Shock Scenarios page — missing ones simply fall back to sector defaults.</p>",
-    unsafe_allow_html=True,
-)
+with st.expander("Required and optional columns"):
+    st.markdown(f"**Required:** {', '.join(config.REQUIRED_COLUMNS)}.")
+    st.markdown("**Optional, used when present:** Short Term Debt, FX Debt, Fuel Cost and the exposure shares "
+                "(bottom-up shock exposures); Government Guaranteed Debt (observed EAD); Source File, Source Page, "
+                "Audit Status, Extraction Method and Data Quality Flag (provenance). Missing ones fall back to "
+                "sector or generic defaults. The full list with synonyms is on the Assumptions & sources page.")
 st.markdown("</div>", unsafe_allow_html=True)
 
 # ------------------------------------------------------------------ #
@@ -254,3 +166,94 @@ else:
         "Cost, Shock Scenarios — to explore this data.</p>",
         unsafe_allow_html=True,
     )
+
+
+# ------------------------------------------------------------------ #
+# Overview stat row
+# ------------------------------------------------------------------ #
+
+if st.session_state.soe_df is not None:
+    full = calculations.compute_zem_components(st.session_state.soe_df)
+    d = latest_per_entity(full)
+    n_soe = d["Entity"].nunique()
+    n_sectors = d["Sector"].nunique() if "Sector" in d.columns else 0
+    distress_n = int((d["Zone"] == "Distress").sum())
+    avg_z = d["Z_EM"].mean() if n_soe else float("nan")
+
+    s1, s2, s3, s4 = st.columns(4)
+    with s1:
+        st.markdown(theme.stat_card("🏛️", "blue", "Total SOEs", n_soe, f"Across {n_sectors} sector(s)"), unsafe_allow_html=True)
+    with s2:
+        st.markdown(theme.stat_card("📊", "purple", "Average Z-EM", f"{avg_z:.2f}", "Portfolio-wide, latest year"), unsafe_allow_html=True)
+    with s3:
+        pct = (distress_n / n_soe * 100) if n_soe else 0
+        st.markdown(
+            theme.stat_card("⚠️", "red", "SOEs in distress", f"{distress_n} / {n_soe}", f"{pct:.0f}% of portfolio (Z-EM ≤ 1.1)"),
+            unsafe_allow_html=True,
+        )
+    with s4:
+        st.markdown(theme.stat_card("🌍", "green", "Coverage", "Multi-sector", "Filter by sector on any page"), unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+
+# ------------------------------------------------------------------ #
+# Toolkit map — where this tool sits in the SOE fiscal-risk toolkit
+# ------------------------------------------------------------------ #
+MODULES = [
+    ("Country Analysis", "This tool", "green", "Upload a country's SOE statements: KPIs, Altman Z-EM, expected fiscal cost, shocks, government support, early warning, report."),
+    ("Global Monitoring", "Prototype", "amber", "Cross-country SOE benchmarking (Pacific monitor first) — needs the standardised multi-country repository."),
+    ("Hidden Subsidies", "Planned", "muted", "Financing advantage over comparable private firms × SOE base; formula and variables to confirm from the reference note."),
+    ("PSO Analysis", "Planned", "muted", "Public service obligations — separating PSO costs from inefficiency; builds on the viability assessment here."),
+    ("Energy Fiscal Risk", "Separate model", "muted", "Tariffs, cost recovery and subsidies in the power sector (Ghana model, other team)."),
+]
+_cards = "".join(
+    f'<div class="sfp-stat" style="padding:12px 14px"><div class="sfp-stat-top" style="margin-bottom:6px">'
+    f'<div class="sfp-stat-label" style="color:{THEME_HEADING};font-weight:700">{name}</div>{theme.status_chip(color, status)}</div>'
+    f'<div class="sfp-stat-caption" style="margin:0">{text}</div></div>'
+    for name, status, color, text in MODULES
+)
+st.markdown(f'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:18px">{_cards}</div>',
+            unsafe_allow_html=True)
+
+# ------------------------------------------------------------------ #
+# About
+# ------------------------------------------------------------------ #
+
+with st.expander("About this tool", expanded=st.session_state.soe_df is None):
+    st.markdown(
+        """
+**How it works**
+
+1. **Upload** — a portfolio of SOEs, one row per SOE-year, with raw financial
+   statement fields. The tool computes the Altman Z''-EM components, the
+   score, and every KPI ratio itself from the raw numbers.
+2. **KPI Dashboard** — profitability, liquidity, solvency, and
+   fiscal-dependency ratios, benchmarked against illustrative thresholds.
+3. **Altman Z-EM** — the four Z''-EM components, the score itself,
+   cross-SOE benchmarking, and a distress/grey/safe distribution with an
+   indicative credit-rating cohort.
+4. **Expected Fiscal Cost** — PD × EAD × LGD, PD from each SOE's Z-EM rating band,
+   EAD proxied by Total Liabilities, LGD set by you.
+5. **Shock Scenarios** — fuel, FX, interest rate, revenue, refinancing and
+   government arrears shocks flow through each SOE's own balance-sheet
+   exposures (bottom-up) and compound over a multi-year horizon, with a
+   correlated Monte Carlo option and an Expected Fiscal Cost / GDP path.
+6. **Government Support** — Role × Link support tier and a bounded rating
+   uplift, capped by the sovereign.
+7. **HTML version** — the whole tool, every page, as one HTML file that
+   runs in any browser with no Python: share it, and recipients can run
+   shocks, Monte Carlo and upload their own data.
+
+Every chart in the tool can export its underlying data, and comes with an
+automated plain-language summary generated directly from the numbers on
+screen (not a live AI call).
+
+**Scope.** Test build. Every coefficient and threshold is listed on the
+**Assumptions & sources** page as literature / data-based, user-set, a
+proxy, or a placeholder that still needs a source.
+        """
+    )
+
+with st.expander("Glossary — what the terms mean"):
+    st.markdown('<p class="sfp-hint">Plain-language definitions for the terms used throughout this tool.</p>', unsafe_allow_html=True)
+    rows = "".join(f"<tr><td style='font-weight:700;white-space:nowrap;'>{term}</td><td>{definition}</td></tr>" for term, definition in config.GLOSSARY.items())
+    st.markdown(f"<table class='sfp-table sfp-table-wrap'><tbody>{rows}</tbody></table>", unsafe_allow_html=True)

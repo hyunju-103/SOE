@@ -5,7 +5,7 @@ import streamlit as st
 import calculations
 from config import BAR_CORNER_RADIUS, CATEGORY_LABELS, CATEGORY_ORDER, CHART_LAYOUT, KPI_CATEGORIES, KPI_THRESHOLDS, THEME
 from utils import theme
-from utils.charts import MINIMAL_MODEBAR_CONFIG
+from utils.charts import MINIMAL_MODEBAR_CONFIG, add_smooth_line, year_axis
 from utils.filters import render_filters
 
 theme.header(
@@ -31,9 +31,8 @@ if df.empty:
 
 years_all = df["Year"].dropna()
 has_years = df["Year"].nunique() > 1
-# Long panels (10–20+ years): a from–to range instead of one chip per year,
-# and trend charts switch from bars to a line above LINE_CHART_MIN_YEARS.
-LINE_CHART_MIN_YEARS = 11
+# Long panels (10–20+ years): a from–to range instead of one chip per year.
+# Trends are the same smooth line chart for any number of years.
 if has_years:
     year_options = sorted(int(y) for y in df["Year"].unique().tolist())
     yr_from, yr_to = st.select_slider("Years", options=year_options, value=(year_options[0], year_options[-1]), key="kpi_year_range")
@@ -98,22 +97,23 @@ for i, cat in enumerate(CATEGORY_ORDER):
             if dd.empty:
                 st.markdown('<p class="sfp-kpi-desc">No data for this ratio.</p>', unsafe_allow_html=True)
             else:
-                values = dd[chosen] * 100 if spec["unit"] == "%" else dd[chosen]
-                latest_year = dd["Year"].iloc[-1]
-                years_str = dd["Year"].astype(int).astype(str)
-                if len(dd) >= LINE_CHART_MIN_YEARS:
-                    # many years: a line reads better than 20 thin bars; latest year highlighted
-                    fig = go.Figure(go.Scatter(
-                        x=years_str, y=values, mode="lines+markers",
-                        line=dict(color=THEME["chart_navy"], width=2),
-                        marker=dict(size=[9 if y == latest_year else 0 for y in dd["Year"]], color=THEME["gold"]),
-                    ))
-                    fig.add_hline(y=0, line_width=1, line_color=THEME["border"])
-                else:
-                    bar_colors = [THEME["gold"] if y == latest_year else THEME["chart_navy"] for y in dd["Year"]]
-                    fig = go.Figure(go.Bar(x=years_str, y=values, marker=dict(color=bar_colors, cornerradius=BAR_CORNER_RADIUS)))
+                # every year in the range on the axis (gaps where the ratio is n/a), latest point highlighted,
+                # dashed lines at the alert (red) and good (green) cutoffs — as in the HTML version
+                scale = 100 if spec["unit"] == "%" else 1
+                years = d["Year"].astype(int).tolist()
+                values = [None if pd.isna(v) else v * scale for v in d[chosen]]
+                fig = go.Figure()
+                fig.add_hline(y=spec["red_cut"] * scale, line_dash="dash", line_width=1.3, line_color=THEME["red"])
+                fig.add_hline(y=spec["green_cut"] * scale, line_dash="dash", line_width=1.3, line_color=THEME["green"])
+                fmt = "%{y:.1f}%" if spec["unit"] == "%" else "%{y:.2f}×"
+                add_smooth_line(fig, years, values, color=THEME["chart_navy"], highlight_last=True, last_color=THEME["accent"],
+                                hovertemplate=f"%{{x}}: {fmt}<extra></extra>")
+                last_v = dd[chosen].iloc[-1] * scale
+                fig.add_annotation(x=int(dd["Year"].iloc[-1]), y=last_v, text=(f"{last_v:.1f}%" if spec["unit"] == "%" else f"{last_v:.2f}×"),
+                                   showarrow=False, xanchor="left", xshift=8, font=dict(size=12, color=THEME["text"]))
                 _mini_layout(fig, spec["unit"])
-                fig.update_xaxes(nticks=8)
+                fig.update_xaxes(type="linear")
+                year_axis(fig, years, max_ticks=3, right_pad=max(0.9, 0.28 * len(years)))  # room for the value label
                 st.plotly_chart(fig, use_container_width=True, config=MINIMAL_MODEBAR_CONFIG, key=f"trendchart_{cat}")
                 st.markdown(f'<p class="sfp-kpi-desc">{spec["description"]}</p>', unsafe_allow_html=True)
                 st.download_button(
