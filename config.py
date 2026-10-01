@@ -413,7 +413,7 @@ THEME = {
     "sidebar_bg": "#002244", "sidebar_bg_active": "#0B3A66",
     "sidebar_text": "#C6D0DB", "sidebar_text_active": "#FFFFFF",
     # surfaces and text
-    "bg": "#F3F5F8", "card": "#FFFFFF", "border": "#E1E6EC", "line": "#E1E6EC",
+    "bg": "#FFFFFF", "card": "#FFFFFF", "border": "#E1E6EC", "line": "#E1E6EC",
     "text": "#1C2530", "ink2": "#4C5A68", "muted": "#76828F", "heading": "#002244",
     # accent (World Bank bright blue) and its stronger text shade
     "blue": "#0071BC", "blue_bg": "#E5F5FB", "accent": "#009FDA",

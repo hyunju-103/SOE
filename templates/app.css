@@ -2,7 +2,7 @@
    then a 12-column panel grid. Simulator pages put controls on the left and results on the right.
    Palette: World Bank navy #002244 and bright blue #009FDA; good / watch / alert carry state. */
 :root {
-  --bg: #f3f5f8; --surface: #ffffff; --surface-2: #f5f7fa;
+  --bg: #ffffff; --surface: #ffffff; --surface-2: #f5f7fa;
   --ink: #1c2530; --ink-2: #4c5a68; --muted: #76828f; --heading: #002244;
   --line: #e1e6ec; --axis: #c2cbd5;
   --band-bg: #002244; --band-ink: #ffffff; --band-ink-2: rgba(255, 255, 255, .78); --band-chip: rgba(255, 255, 255, .10);
