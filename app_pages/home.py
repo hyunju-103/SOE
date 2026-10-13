@@ -28,7 +28,7 @@ theme.header(
     "SOE FISCAL RISK TOOL",
     "SOE Fiscal Risk Dashboard",
     "A layered framework for state-owned enterprises: financial diagnostics "
-    "(KPI Dashboard), distress signal (Altman Z-EM), fiscal exposure to the "
+    "(KPI Dashboard), distress signal (Distress Indicator), fiscal exposure to the "
     "sovereign (Expected Fiscal Cost), dynamic shock simulation (Shock Scenarios) "
     "and government support. The HTML version page exports the whole tool as one shareable file.",
     meta=_meta,
@@ -195,7 +195,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 # Toolkit map — where this tool sits in the SOE fiscal-risk toolkit
 # ------------------------------------------------------------------ #
 MODULES = [
-    ("Country Analysis", "This tool", "green", "Upload a country's SOE statements: KPIs, Altman Z-EM, expected fiscal cost, shocks, government support, early warning, report."),
+    ("Country Analysis", "This tool", "green", "Upload a country's SOE statements: KPIs, distress indicator, expected fiscal cost, shocks, government support, early warning, report."),
     ("Global Monitoring", "Prototype", "amber", "Cross-country SOE benchmarking (Pacific monitor first) — needs the standardised multi-country repository."),
     ("Hidden Subsidies", "Planned", "muted", "Financing advantage over comparable private firms × SOE base; formula and variables to confirm from the reference note."),
     ("PSO Analysis", "Planned", "muted", "Public service obligations — separating PSO costs from inefficiency; builds on the viability assessment here."),
@@ -224,7 +224,7 @@ with st.expander("About this tool", expanded=st.session_state.soe_df is None):
    score, and every KPI ratio itself from the raw numbers.
 2. **KPI Dashboard** : profitability, liquidity, solvency, and
    fiscal-dependency ratios, benchmarked against illustrative thresholds.
-3. **Altman Z-EM** : the four Z''-EM components, the score itself,
+3. **Distress Indicator** : the four Z''-EM components, the score itself,
    cross-SOE benchmarking, and a distress/grey/safe distribution with an
    indicative credit-rating cohort.
 4. **Expected Fiscal Cost** : PD × EAD × LGD, PD from each SOE's Z-EM rating band,
