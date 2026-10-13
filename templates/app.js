@@ -786,20 +786,20 @@
       const facts = el("ul", { class: "facts" },
         el("li", {}, el("b", {}, `${withEx} of ${pl(latest.length, "SOE")}`), " carry at least one shock exposure in the data (fuel cost, FX or short-term debt, exposure shares); the rest use sector or generic defaults on the Shock Scenarios tab."),
         el("li", {}, el("b", {}, `${withG} of ${pl(latest.length, "SOE")}`), " report government-guaranteed debt, which the Expected Fiscal Cost tab can use as the exposure at default."),
-        el("li", {}, "Parameters: ", el("b", {}, String(CFG.PARAMETER_REGISTER.filter((r) => r.status === "placeholder").length)), " of " + CFG.PARAMETER_REGISTER.length + " numbers the tool uses are still placeholders that need a source — see ", go("assumptions", "Assumptions & sources"), "."));
+        el("li", {}, "Parameters: ", el("b", {}, String(CFG.PARAMETER_REGISTER.filter((r) => r.status === "placeholder").length)), " of " + CFG.PARAMETER_REGISTER.length + " numbers the tool uses are still placeholders that need a source (see ", go("assumptions", "Assumptions & sources")), "."));
       body.replaceChildren(...(blocks.length ? blocks : [el("p", { class: "note", style: "margin-top:0" }, "This file carries no provenance columns. Add source_file, source_page, audit_status, extraction_method and data_quality_flag (they are in the standard template) to record where each number came from and whether it is audited, extracted or a proxy.")]), facts);
     },
     buildAbout(body) {
       body.replaceChildren(
         el("ol", { class: "steps" },
-          el("li", {}, go("report", "Report"), " — the portfolio in five sections: executive summary, financial performance, distress and fiscal risk, stress tests, policy implications. Prints to PDF when the page is opened on its own."),
-          el("li", {}, go("kpi", "KPI Dashboard"), " — profitability, liquidity, solvency and fiscal-dependency ratios against illustrative thresholds; trend per SOE (any number of years) and comparison across SOEs."),
-          el("li", {}, go("altman", "Altman Z-EM"), " — the four components, the score, benchmarking, and the distress / grey / safe distribution with an indicative rating."),
-          el("li", {}, go("efc", "Expected Fiscal Cost"), " — PD × EAD × LGD: PD from each SOE's rating band, EAD a share of total liabilities or reported guaranteed debt, LGD set by you."),
-          el("li", {}, go("shock", "Shock Scenarios"), " — fuel, FX, interest-rate, revenue, refinancing and arrears shocks through each SOE's own exposures over a multi-year horizon, with a correlated Monte Carlo option."),
-          el("li", {}, go("gre", "Government Support"), " — Role × Link support tier and bounded rating uplift, capped by the sovereign."),
-          el("li", {}, go("warning", "Early Warning"), " — trigger rules and the signal each SOE sends."),
-          el("li", {}, go("assumptions", "Assumptions & sources"), " — every coefficient and default with its source and status, and the standard data dictionary.")),
+          el("li", {}, go("report", "Report"), " : the portfolio in five sections: executive summary, financial performance, distress and fiscal risk, stress tests, policy implications. Prints to PDF when the page is opened on its own."),
+          el("li", {}, go("kpi", "KPI Dashboard"), " : profitability, liquidity, solvency and fiscal-dependency ratios against illustrative thresholds; trend per SOE (any number of years) and comparison across SOEs."),
+          el("li", {}, go("altman", "Altman Z-EM"), " : the four components, the score, benchmarking, and the distress / grey / safe distribution with an indicative rating."),
+          el("li", {}, go("efc", "Expected Fiscal Cost"), " : PD × EAD × LGD: PD from each SOE's rating band, EAD a share of total liabilities or reported guaranteed debt, LGD set by you."),
+          el("li", {}, go("shock", "Shock Scenarios"), " : fuel, FX, interest-rate, revenue, refinancing and arrears shocks through each SOE's own exposures over a multi-year horizon, with a correlated Monte Carlo option."),
+          el("li", {}, go("gre", "Government Support"), " : Role × Link support tier and bounded rating uplift, capped by the sovereign."),
+          el("li", {}, go("warning", "Early Warning"), " : trigger rules and the signal each SOE sends."),
+          el("li", {}, go("assumptions", "Assumptions & sources"), " : every coefficient and default with its source and status, and the standard data dictionary.")),
         el("p", { class: "note" }, "Every calculation runs in this page with the same formulas and config.py values as the Python tool."),
         el("details", { class: "plain" }, el("summary", {}, "Glossary — what the terms mean"),
           simpleTable(["Term", "Meaning"], Object.entries(CFG.GLOSSARY).map(([k, v]) => [k, v]), { cls: "glossary" })),
