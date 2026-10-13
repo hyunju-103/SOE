@@ -219,23 +219,23 @@ with st.expander("About this tool", expanded=st.session_state.soe_df is None):
         """
 **How it works**
 
-1. **Upload** — a portfolio of SOEs, one row per SOE-year, with raw financial
+1. **Upload** : a portfolio of SOEs, one row per SOE-year, with raw financial
    statement fields. The tool computes the Altman Z''-EM components, the
    score, and every KPI ratio itself from the raw numbers.
-2. **KPI Dashboard** — profitability, liquidity, solvency, and
+2. **KPI Dashboard** : profitability, liquidity, solvency, and
    fiscal-dependency ratios, benchmarked against illustrative thresholds.
-3. **Altman Z-EM** — the four Z''-EM components, the score itself,
+3. **Altman Z-EM** : the four Z''-EM components, the score itself,
    cross-SOE benchmarking, and a distress/grey/safe distribution with an
    indicative credit-rating cohort.
-4. **Expected Fiscal Cost** — PD × EAD × LGD, PD from each SOE's Z-EM rating band,
+4. **Expected Fiscal Cost** : PD × EAD × LGD, PD from each SOE's Z-EM rating band,
    EAD proxied by Total Liabilities, LGD set by you.
-5. **Shock Scenarios** — fuel, FX, interest rate, revenue, refinancing and
+5. **Shock Scenarios** : fuel, FX, interest rate, revenue, refinancing and
    government arrears shocks flow through each SOE's own balance-sheet
    exposures (bottom-up) and compound over a multi-year horizon, with a
    correlated Monte Carlo option and an Expected Fiscal Cost / GDP path.
-6. **Government Support** — Role × Link support tier and a bounded rating
+6. **Government Support** : Role × Link support tier and a bounded rating
    uplift, capped by the sovereign.
-7. **HTML version** — the whole tool, every page, as one HTML file that
+7. **HTML version** : the whole tool, every page, as one HTML file that
    runs in any browser with no Python: share it, and recipients can run
    shocks, Monte Carlo and upload their own data.
 
