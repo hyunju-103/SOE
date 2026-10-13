@@ -786,7 +786,7 @@
       const facts = el("ul", { class: "facts" },
         el("li", {}, el("b", {}, `${withEx} of ${pl(latest.length, "SOE")}`), " carry at least one shock exposure in the data (fuel cost, FX or short-term debt, exposure shares); the rest use sector or generic defaults on the Shock Scenarios tab."),
         el("li", {}, el("b", {}, `${withG} of ${pl(latest.length, "SOE")}`), " report government-guaranteed debt, which the Expected Fiscal Cost tab can use as the exposure at default."),
-        el("li", {}, "Parameters: ", el("b", {}, String(CFG.PARAMETER_REGISTER.filter((r) => r.status === "placeholder").length)), " of " + CFG.PARAMETER_REGISTER.length + " numbers the tool uses are still placeholders that need a source (see ", go("assumptions", "Assumptions & sources")), "."));
+        el("li", {}, "Parameters: ", el("b", {}, String(CFG.PARAMETER_REGISTER.filter((r) => r.status === "placeholder").length)), " of " + CFG.PARAMETER_REGISTER.length + " numbers the tool uses are still placeholders that need a source. * see ", go("assumptions", "Assumptions & sources"), "."));
       body.replaceChildren(...(blocks.length ? blocks : [el("p", { class: "note", style: "margin-top:0" }, "This file carries no provenance columns. Add source_file, source_page, audit_status, extraction_method and data_quality_flag (they are in the standard template) to record where each number came from and whether it is audited, extracted or a proxy.")]), facts);
     },
     buildAbout(body) {
