@@ -295,7 +295,7 @@ KPI_THRESHOLDS = {
 }
 
 KPI_CATEGORIES = {
-    "profitability": ["operating_margin", "net_margin", "ebitda_margin", "roa", "roe"],
+    "profitability": ["operating_margin", "net_margin",  "roa", "roe"], #"ebitda_margin",
     "liquidity": ["current_ratio", "working_capital_ratio"],
     "solvency": ["debt_to_ebitda", "liabilities_to_assets", "interest_coverage", "debt_to_equity", "asset_turnover", "depreciation_to_ebitda"],
     "fiscal_dependency": ["grants_to_revenue", "grants_to_expense", "effective_tax_rate"],
