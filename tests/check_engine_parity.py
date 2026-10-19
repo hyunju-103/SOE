@@ -64,6 +64,12 @@ out.mc = mcStats(E.monteCarlo(base, pp, { n: inp.mc.n, fuelSd: 0.10, fxSd: 0.08,
 const pp4 = Object.assign({}, pp, { revenue_shock_std_devs: -1.0, revenue_sigma: 0.12, revenue_shock_pct: -0.12 });
 const sims4 = E.monteCarlo(base, pp4, { n: inp.mc.n, fuelSd: 0.10, fxSd: 0.08, rho: 0.30, rateSd: 150, revSd: 0.8, correlations: inp.mc.corr, H: inp.H, lgd: 70, gdp: null, eadShare: 0.8 });
 out.mc4 = mcStats(sims4);
+{ // fuel price path: draws centred on the path peak, the whole path rescaled per draw
+  const simsP = E.monteCarlo(base, Object.assign({}, pp, inp.mc.path), { n: inp.mc.n, fuelSd: 0.10, fxSd: 0.08, rho: 0.30, H: inp.H, lgd: 70, gdp: null });
+  const fc = (s, t) => s.path[t]["Fuel Cost Change"];
+  out.mcPath = Object.assign(mcStats(simsP), { mu: simsP.reduce((a, s) => a + s.fuel, 0) / simsP.length,
+    shape: simsP.every((s) => fc(s, 1) === 0 && Math.abs(fc(s, 3) - 0.5 * fc(s, 2)) <= 1e-9 * Math.max(1, Math.abs(fc(s, 2)))) });
+}
 { // sample moments of the drawn shocks
   const nm = sims4.names, X = nm.map(k => sims4.map(s => s.draw[k]));
   const mu = X.map(a => a.reduce((s, v) => s + v, 0) / a.length);
@@ -88,7 +94,7 @@ process.stdout.write(JSON.stringify(out, (k, v) => (typeof v === "number" && !Nu
 
 CASH_KEYS = ["Net Income", "Current Liabilities", "Current Assets", "Total Assets", "State Compensation Receivable",
              "State Compensation Paid", "Cash Funding Gap", "Interest on New Debt", "New Short-term Debt", "Supplier Arrears",
-             "Trapped VAT Credits", "Current Ratio", "Adjusted Current Ratio", "Debt to Assets"]
+             "Trapped VAT Credits", "Current Ratio", "Adjusted Current Ratio", "Debt to Assets", "Cash", "Cash Drawdown"]
 
 
 def close(a, b, tol=1e-6):
@@ -107,6 +113,9 @@ def main():
         print("Node.js not found — skipping the engine parity check.")
         return 0
     raw = data_loader.demo_portfolio()
+    # a partial cash column, so cash-first financing runs for some SOEs and stays inert for the others
+    raw["Cash and Equivalents"] = np.where(raw["Entity"].isin(["SOE A", "SOE C", "SOE D", "SOE G", "SOE H"]),
+                                           0.25 * raw["Current Assets"].astype(float), np.nan)
     H = 3
     zero = dict(config.DEFAULT_SHOCK_PARAMS, **{k: 0.0 for k in ["fuel_shock_pct", "fx_shock_pct", "rate_shock_bps", "revenue_shock_std_devs", "refinancing_spread_bps", "arrears_pct_of_revenue"]})
     custom = dict(config.DEFAULT_SHOCK_PARAMS, fuel_shock_pct=-0.2, fx_shock_pct=0.45, rate_shock_bps=-150, revenue_shock_std_devs=1.5,
@@ -118,11 +127,21 @@ def main():
     oil.update({k: v for k, v in config.OIL_SHOCK_PRESET.items() if k != "fuel_cost_share"})
     oil_policy = dict(oil, tariff_increase_pct=0.10, comp_provision_share=0.4, cash_gap_payables_share=0.3, vat_trapped_share=0.5,
                       comp_backlog_collected=0.6, cash_gap_short_term_share=0.7)
-    overshoot = dict(oil, tariff_increase_pct=0.30, fuel_shock_pct=0.10)
-    cheap_fuel = dict(oil, fuel_shock_pct=-0.30)
+    overshoot = dict(oil, tariff_increase_pct=0.30, fuel_shock_pct=0.10, fuel_shock_path=[])
+    cheap_fuel = dict(oil, fuel_shock_pct=-0.30, fuel_shock_path=[])
     legacy = dict(custom, legacy_loss_assets=True)
+    # fuel price path, oil linkage, tariff base, cash-first financing
+    path_step = dict(subsidy, tariff_increase_pct=0.05, fuel_shock_path=[0.0, 0.4, 0.2])
+    path_neg = dict(oil, tariff_increase_pct=0.10, fuel_shock_path=[-0.3, 0.0, 0.15])
+    linkage = dict(oil, fuel_oil_linkage=0.6)
+    tariff_exg = dict(subsidy, tariff_increase_pct=0.15, tariff_revenue_base="revenue_ex_grants")
+    cash_floor = dict(oil, cash_floor_opex_share=0.05)
+    cash_half = dict(custom, cash_buffer_share=0.5)
+    cash_off = dict(oil, cash_buffer_share=0.0)
     scenarios = {"zero": zero, "combined": dict(config.DEFAULT_SHOCK_PARAMS), "custom": custom, "subsidy": subsidy, "overfull": overfull,
-                 "oil": oil, "oil_policy": oil_policy, "overshoot": overshoot, "cheap_fuel": cheap_fuel, "legacy": legacy}
+                 "oil": oil, "oil_policy": oil_policy, "overshoot": overshoot, "cheap_fuel": cheap_fuel, "legacy": legacy,
+                 "path_step": path_step, "path_neg": path_neg, "linkage": linkage, "tariff_exg": tariff_exg,
+                 "cash_floor": cash_floor, "cash_half": cash_half, "cash_off": cash_off}
     mc_corr = {"fuel|fx": 0.3, "fuel|rate": 0.2, "fx|rate": 0.4, "fuel|revenue": -0.3, "fx|revenue": -0.2, "rate|revenue": 0.0}
     psd_cases = [{"fuel|fx": 0.3}, {"fuel|fx": 0.9, "fuel|rate": 0.9, "fx|rate": -0.9}, {"fuel|fx": 1.0, "fuel|rate": 1.0, "fx|rate": 1.0},
                  {"fuel|fx": 0.5, "fuel|rate": -0.5, "fx|rate": 0.5}, {"fuel|fx": -0.8, "fuel|rate": -0.8, "fx|rate": -0.8}]
@@ -144,7 +163,8 @@ def main():
     qtest = [0.05, 0.25, 0.5, 0.75, 0.95]
     payload = {
         "engine": str(ROOT / "templates" / "engine.js"), "config": report.config_payload(), "rows": report.rows_payload(raw),
-        "keys": keys, "scenarios": scenarios, "cash_keys": CASH_KEYS, "H": H, "gre": gre_cases, "mc": {"entity": "SOE F", "n": 5000, "corr": mc_corr},
+        "keys": keys, "scenarios": scenarios, "cash_keys": CASH_KEYS, "H": H, "gre": gre_cases,
+        "mc": {"entity": "SOE F", "n": 5000, "corr": mc_corr, "path": {"fuel_shock_path": [0.0, 0.6, 0.3]}},
         "qvals": qvals, "qtest": qtest, "psd": psd_cases, "labels": labels, "headers": headers, "cells": cells, "texts": texts,
     }
     res = subprocess.run([node, "-e", NODE_RUNNER], input=json.dumps(payload), capture_output=True, text=True, check=True)
@@ -247,6 +267,18 @@ def main():
         if rel > {"p50": 0.03, "p95": 0.06, "zp50": 0.03, "distress": 0.08}[k] and abs(v - js["mc4"][k]) > 0.01 and not in_band:
             fails.append(f"MC4 {k}: py={v:.6g} js={js['mc4'][k]:.6g} (rel {rel:.3f})")
     print("Monte Carlo, 4 variables:", {k: (round(v, 4), round(js["mc4"][k], 4)) for k, v in py4.items()})
+    # Monte Carlo with a fuel price path: centred on the peak, shape kept, same median Z-EM
+    mcp = shocks.run_monte_carlo(base, dict(pp, fuel_shock_path=[0.0, 0.6, 0.3]), n_sims=5000, fuel_std=0.10, fx_std=0.08, correlation=0.30,
+                                 horizon_years=H, lgd_pct=70)
+    zp = mcp[mcp["Projection Year"] == H]["Z_EM"].quantile(0.5)
+    jp = js["mcPath"]
+    if abs(jp["mu"] - 0.6) > 4 * 0.10 / math.sqrt(5000):
+        fails.append(f"MC path: JS fuel draws centred on {jp['mu']:.4f}, not the path peak 0.6")
+    if not jp["shape"]:
+        fails.append("MC path: JS draws do not keep the path shape")
+    if abs(zp - jp["zp50"]) / max(abs(zp), 1e-9) > 0.03 and abs(zp - jp["zp50"]) > 0.01:
+        fails.append(f"MC path zp50: py={zp:.6g} js={jp['zp50']:.6g}")
+    print("Monte Carlo with a fuel path, median final Z-EM:", (round(zp, 4), round(jp["zp50"], 4)))
     mom = js["mom"]
     target_mu = {"fuel": pp4["fuel_shock_pct"], "fx": pp4["fx_shock_pct"], "rate": pp4["rate_shock_bps"], "revenue": pp4["revenue_shock_std_devs"]}
     target_sd = {"fuel": 0.10, "fx": 0.08, "rate": 150, "revenue": 0.8}
@@ -306,7 +338,7 @@ def main():
             fails.append(f"upload text {t[:30]!r}: py=({d!r}, {exp}) js=({jd!r}, {jf})")
     n_extra += 2 * len(cells) + 2 * len(texts)
 
-    n_checks = len(js["rows"]) * len(keys) + len(latest) * (5 + len(scenarios) * (2 * H + 3)) + len(gre_cases) + len(qtest) + 6 + n_extra
+    n_checks = len(js["rows"]) * len(keys) + len(latest) * (5 + len(scenarios) * (2 * H + 3)) + len(gre_cases) + len(qtest) + 6 + 3 + n_extra
     if fails:
         print(f"{len(fails)} mismatches:")
         print("\n".join(fails[:40]))

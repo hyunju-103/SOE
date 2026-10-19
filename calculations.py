@@ -216,7 +216,7 @@ def soe_exposures(row: pd.Series) -> dict:
         out[name] = (config.DEFAULT_EXPOSURES[name], "Default (placeholder)" if name != "fuel_subsidy_share" else "User (off by default)")
     # cash and financing settings of the shock engine (policy, not observed)
     for name, value in config.DEFAULT_CASH_SETTINGS.items():
-        out[name] = (value, "Policy setting (default keeps the original model)")
+        out[name] = (value, "Policy setting (default: original model, cash drawn first)")
     return out
 
 

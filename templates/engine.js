@@ -22,6 +22,8 @@
     const isNum = (v) => typeof v === "number" && Number.isFinite(v);
     const div = (a, b) => (isNum(a) && isNum(b) && b !== 0 ? a / b : NaN); // _safe_div: inf -> NaN
     const lo = (v) => (v === null || v === undefined ? -INF : v);
+    /** shocks._fuel_path: the per-year fuel price path (index 0 = projection year 1), or null for the step profile */
+    const fuelPath = (p) => { const v = p.fuel_shock_path; return Array.isArray(v) && v.length ? v.map((x) => (isNum(x) ? x : 0)) : null; };
     const hi = (v) => (v === null || v === undefined ? INF : v);
     const ZCOMP = Object.keys(CFG.ZEM_COEFFICIENTS); // X1..X4 in config order
     const ZONES = CFG.ZONES.map(([n, a, b]) => [n, lo(a), hi(b)]);
@@ -142,7 +144,7 @@
       pick("near_term_maturity_share", null, "Short Term Debt", tl, "Short Term Debt / Total Liabilities");
       for (const name of ["tariff_passthrough", "revenue_elasticity", "fuel_subsidy_share"]) out[name] = [CFG.DEFAULT_EXPOSURES[name], name === "fuel_subsidy_share" ? "User (off by default)" : "Default (placeholder)"];
       // cash and financing settings of the shock engine (policy, not observed)
-      for (const [name, value] of Object.entries(CFG.DEFAULT_CASH_SETTINGS || {})) out[name] = [value, "Policy setting (default keeps the original model)"];
+      for (const [name, value] of Object.entries(CFG.DEFAULT_CASH_SETTINGS || {})) out[name] = [value, "Policy setting (default: original model, cash drawn first)"];
       return out;
     }
     function recoveryScenarios(sector) {
@@ -178,12 +180,16 @@
     function runScenario(base, p, H) {
       const num = (v, d) => (isNum(v) ? v : d);
       const dur = p.shock_duration_years;
+      const fpath = fuelPath(p); // per-year fuel price path, or null for the step profile
+      const cash0 = num(base["Cash and Equivalents"], NaN);
       const st = {
         EBIT: base[K.ebit], Interest: base[K.int], RE: base[K.re], Equity: base[K.eq], TL: base[K.tl], TA: base[K.ta],
         CA: base[K.ca], CL: base[K.cl], Revenue: base[K.rev], OpEx: base[K.opex],
         Recv: 0, VAT: 0, STDebt: 0, Payables: 0, LTDebt: 0, // stocks created by the shock
         // illiquid items already in the base-year current assets, where the file reports them (held flat)
         IlliquidOpen: num(base["Government Arrears Owed"], 0) + num(base["VAT Credits"], 0),
+        // opening cash (0 when the file does not report it) and the drawdown not yet rebuilt
+        Cash: isNum(cash0) ? cash0 : 0, CashDrawn: 0,
       };
       const out = [snap(base, 0, st, {})];
       const sub = p.fuel_subsidy_share || 0, pt = p.tariff_passthrough || 0;
@@ -192,14 +198,24 @@
       const stShare = num(p.cash_gap_short_term_share, 0), apShare = num(p.cash_gap_payables_share, 0);
       const rate = num(p.new_debt_interest_rate, 0), vatTrap = num(p.vat_rate, 0) * num(p.vat_trapped_share, 0);
       const kInt = 1 - stShare * apShare; // share of new funding that bears interest (unpaid supplier bills do not)
+      const eps = num(p.fuel_oil_linkage, 1);                   // share of the fuel bill that moves with the oil price
+      const exGrants = p.tariff_revenue_base === "revenue_ex_grants";
+      const grants = num(base[K.grants], 0);                     // compensation already booked in revenue
+      const buf = Math.min(1, Math.max(0, num(p.cash_buffer_share, 1)));
+      const floor = num(p.cash_floor_opex_share, 0);
+      const cashLive = isNum(cash0) && buf > 0 && !p.legacy_loss_assets;
 
       for (let t = 1; t <= H; t++) {
         const active = t <= dur;
+        let pFuel, fuelActive;
+        if (fpath === null) { pFuel = p.fuel_shock_pct; fuelActive = active; }       // step: full magnitude while the shock is on
+        else { pFuel = t <= fpath.length ? fpath[t - 1] : 0; fuelActive = pFuel !== 0; } // per-year path, zero beyond its end
         let dFuel = 0, dFx = 0, dRev = 0, dInt = 0, dReval = 0, dArr = 0;
         let inc = 0, tariff = 0, cust = 0, comp = 0, vat = 0;
-        if (active) {
-          inc = p.fuel_cost_share * st.OpEx * p.fuel_shock_pct; // fuel-cost change
-          tariff = tariffUp * st.Revenue;                       // Option B: end-user tariff increase
+        if (fuelActive) {
+          inc = p.fuel_cost_share * st.OpEx * eps * pFuel;      // fuel-cost change
+          const tBase = exGrants ? Math.max(0, st.Revenue - grants) : st.Revenue;
+          tariff = tariffUp * tBase;                            // Option B: end-user tariff increase
           const rem = inc - tariff;                             // what is left after the tariff increase
           if (tariff > 0 && rem < 0) {
             dFuel = -rem;                                       // tariff more than covers the fuel bill: SOE keeps the excess
@@ -209,6 +225,8 @@
             dFuel = -rem * Math.max(0, 1 - pt - sub);           // Case A: SOE absorbs the rest
           }
           vat = Math.max(0, inc) * vatTrap;                     // input VAT on the extra fuel bill that cannot be recovered
+        }
+        if (active) {
           dFx = -(p.fx_cost_share * st.OpEx - p.fx_revenue_share * st.Revenue) * p.fx_shock_pct;
           dRev = p.revenue_elasticity * (p.revenue_shock_pct || 0) * st.Revenue;
           const dRate = p.floating_debt_share * st.TL * (p.rate_shock_bps / 10000);
@@ -231,15 +249,17 @@
 
         // cash the SOE has to find this year (negative = surplus)
         const need0 = -ni0 + dRecv + vat;
-        let fund = 0, intNew = 0, repay = 0, left = 0;
+        let fund = 0, intNew = 0, repay = 0, left = 0, draw = 0, rebuilt = 0;
         if (need0 > 0) {
-          fund = need0 / (1 - (kInt * rate) / 2);              // grossed up for half a year of interest on the draw
+          if (cashLive) draw = Math.min(need0, Math.max(0, st.Cash - floor * st.OpEx)) * buf; // cash first, down to the floor
+          fund = (need0 - draw) / (1 - (kInt * rate) / 2);     // the rest borrowed, grossed up for half a year of interest
           intNew = (rate * kInt * fund) / 2;
         } else {                                               // surplus repays short-term debt first, the rest stays as assets
           let s = -need0;
           const rb = Math.min(s, st.STDebt); st.STDebt -= rb; s -= rb;
           const ra = Math.min(s, st.Payables); st.Payables -= ra; s -= ra;
           repay = rb + ra; left = s;
+          if (cashLive) rebuilt = Math.min(left, st.CashDrawn); // rebuilds the cash drawn in earlier years, no further
         }
         const ni = ni0 - intNew;
         const fST = fund * stShare, fAP = fST * apShare, fBank = fST - fAP, fLT = fund - fST;
@@ -253,9 +273,11 @@
         st.CA += dRecv + vat + dArr;
         st.TA += dRecv + vat + dArr + left;
         if (p.legacy_loss_assets && need0 > 0) st.TA += Math.min(0, ni); // optional: old rule, a borrowed loss also cuts total assets
+        if (draw) { st.Cash -= draw; st.CashDrawn += draw; st.CA -= draw; st.TA -= draw; } // cash paid out
+        if (rebuilt) { st.Cash += rebuilt; st.CashDrawn -= rebuilt; st.CA += rebuilt; }    // part of the surplus held as cash
         st.EBIT = ebit;
         st.Interest = base[K.int] + dInt + intOpen + intNew;
-        out.push(snap(base, t, st, { inc, tariff, cust, comp, paidNow, unpaid, collected, provision, vat, fund, fST, intNew: intOpen + intNew, ni }));
+        out.push(snap(base, t, st, { inc, tariff, cust, comp, paidNow, unpaid, collected, provision, vat, fund, draw, fST, intNew: intOpen + intNew, ni }));
       }
       return out;
     }
@@ -278,7 +300,8 @@
         "State Compensation Paid": (f.paidNow || 0) + (f.collected || 0), // cash from the budget this year
         "Compensation Provision": f.provision || 0,
         "Trapped VAT": f.vat || 0,
-        "Cash Funding Gap": f.fund || 0,
+        "Cash Funding Gap": f.fund || 0,                    // borrowed, after any cash drawn
+        "Cash Drawdown": f.draw || 0,                       // paid out of the opening cash buffer
         "Interest on New Debt": f.intNew || 0,
         // new stocks
         "State Compensation Receivable": st.Recv,
@@ -286,6 +309,7 @@
         "New Short-term Debt": st.STDebt,
         "Supplier Arrears": st.Payables,
         "New Long-term Debt": st.LTDebt,
+        Cash: st.Cash,
         // liquidity and solvency
         "Current Ratio": div(st.CA, st.CL),
         "Adjusted Current Ratio": div(st.CA - illiquid, st.CL), // excludes State receivables and trapped VAT
@@ -306,8 +330,11 @@
     const gdpPath = (g0, g, H) => Array.from({ length: H + 1 }, (_, t) => g0 * (1 + g) ** t);
     const pyPlus0 = (v) => { const r = Math.round(v); return (r >= 0 && !Object.is(r, -0) ? "+" : "") + String(r).replace("-0", "0"); };
     function describeShocks(p) {
-      const parts = [];
-      if (p.fuel_shock_pct) parts.push(`Fuel ${pyPlus0(p.fuel_shock_pct * 100)}%`);
+      const parts = [], fp = fuelPath(p);
+      let fuelOn;
+      if (fp) { parts.push(`Fuel path ${fp.map((v) => pyPlus0(v * 100)).join("/")}%`); fuelOn = fp.some((v) => v !== 0); }
+      else { fuelOn = !!p.fuel_shock_pct; if (fuelOn) parts.push(`Fuel ${pyPlus0(p.fuel_shock_pct * 100)}%`); }
+      const nFuel = parts.length;
       if (p.fx_shock_pct) parts.push(`FX ${pyPlus0(p.fx_shock_pct * 100)}%`);
       if (p.rate_shock_bps) parts.push(`Rate ${pyPlus0(p.rate_shock_bps)}bps`);
       if (p.revenue_shock_pct) {
@@ -316,11 +343,12 @@
       }
       if (p.refinancing_spread_bps && (p.near_term_maturity_share || 0) > 0) parts.push(`Refi ${pyPlus0(p.refinancing_spread_bps)}bps`);
       if (p.arrears_pct_of_revenue) parts.push(`Arrears ${pyPlus0(p.arrears_pct_of_revenue * 100)}%/yr`);
+      const stepOn = !fp || parts.length > nFuel; // a shock that runs for shock_duration_years
       if (p.tariff_increase_pct) parts.push(`Tariff ${pyPlus0(p.tariff_increase_pct * 100)}%`);
-      if (p.fuel_subsidy_share && p.fuel_shock_pct) parts.push(`gov. absorbs ${Math.round(p.fuel_subsidy_share * 100)}% of fuel cost change`);
-      if (p.fuel_subsidy_share && p.fuel_shock_pct && (p.comp_paid_share ?? 1) < 1) parts.push(`${Math.round((p.comp_paid_share ?? 1) * 100)}% paid in-year`);
+      if (p.fuel_subsidy_share && fuelOn) parts.push(`gov. absorbs ${Math.round(p.fuel_subsidy_share * 100)}% of fuel cost change`);
+      if (p.fuel_subsidy_share && fuelOn && (p.comp_paid_share ?? 1) < 1) parts.push(`${Math.round((p.comp_paid_share ?? 1) * 100)}% paid in-year`);
       if (!parts.length) return "No shock applied (baseline)";
-      return parts.join(", ") + (p.shock_duration_years ? ` — active ${p.shock_duration_years}yr` : "");
+      return parts.join(", ") + (p.shock_duration_years && stepOn ? ` — active ${p.shock_duration_years}yr` : "");
     }
     // Seeded generator (mulberry32) + Box–Muller, so identical settings reproduce identical draws.
     function rng(seed) {
@@ -364,7 +392,8 @@
       if (Math.min(...values) < -1e-10) throw new Error("The shock correlations are inconsistent (the correlation matrix is not positive semi-definite). Lower some of them.");
       return names.map((a, i) => values.map((lam, j) => sds[a] * vectors[i][j] * Math.sqrt(Math.max(0, lam))));
     }
-    /** run_monte_carlo. Fuel and FX are always drawn around the slider values; the interest-rate shock (bps) and
+    /** run_monte_carlo. Fuel and FX are always drawn around the slider values (with a fuel price path, fuel is drawn
+     *  around the path's peak and each draw rescales the whole path); the interest-rate shock (bps) and
      *  the revenue shock (standard deviations of own revenue growth) are drawn too when their std. dev. is > 0.
      *  o: {n, fuelSd, fxSd, rho, rateSd, revSd, correlations, H, lgd, gdp, seed, eadShare}. With only fuel and FX
      *  drawn, the draws are the same as the original two-variable version for the same seed. */
@@ -373,7 +402,9 @@
       const corrs = Object.assign({}, o.correlations || {});
       if (!("fuel|fx" in corrs)) corrs["fuel|fx"] = o.rho ?? 0;
       const names = ["fuel", "fx"].concat((o.rateSd || 0) > 0 ? ["rate"] : [], (o.revSd || 0) > 0 ? ["revenue"] : []);
-      const means = { fuel: p.fuel_shock_pct, fx: p.fx_shock_pct, rate: p.rate_shock_bps || 0, revenue: p.revenue_shock_std_devs || 0 };
+      const fp = fuelPath(p); // with a path, fuel draws centre on its peak (first largest |value|) and rescale its shape
+      const peak = fp ? fp.reduce((m, v) => (Math.abs(v) > Math.abs(m) ? v : m), fp[0]) : null;
+      const means = { fuel: fp ? peak : p.fuel_shock_pct, fx: p.fx_shock_pct, rate: p.rate_shock_bps || 0, revenue: p.revenue_shock_std_devs || 0 };
       const sds = { fuel: o.fuelSd, fx: o.fxSd, rate: o.rateSd || 0, revenue: o.revSd || 0 };
       let draw;
       if (names.length === 2) {
@@ -390,6 +421,7 @@
         const d = Object.fromEntries(names.map((nm, k) => [nm, 0])), v = draw();
         names.forEach((nm, k) => { d[nm] = v[k]; });
         const sp = Object.assign({}, p, { fuel_shock_pct: d.fuel, fx_shock_pct: d.fx });
+        if (fp) sp.fuel_shock_path = peak ? fp.map((v) => d.fuel * (v / peak)) : fp.slice();
         if ("rate" in d) sp.rate_shock_bps = d.rate;
         if ("revenue" in d) { sp.revenue_shock_std_devs = d.revenue; sp.revenue_shock_pct = d.revenue * sigma; }
         sims.push({ fuel: d.fuel, fx: d.fx, draw: d, path: costPath(runScenario(base, sp, H), o.lgd, o.gdp || null, o.eadShare ?? 1) });
