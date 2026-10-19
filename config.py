@@ -352,6 +352,12 @@ DEFAULT_SHOCK_PARAMS = {
     # revenue — a policy response, so it is a magnitude (0 in the no-shock
     # path). 0 = Option A (tariff freeze); 0.10–0.15 = Option B.
     "tariff_increase_pct": 0.0,
+    # Per-year fuel price change for the fuel channel only (index 0 = projection
+    # year 1; zero beyond its end), e.g. [0, 0.60, 0.30] = +60% in year 2, +30% in
+    # year 3. Replaces the step (fuel_shock_pct for shock_duration_years); the
+    # tariff increase then applies in the years where the path is non-zero.
+    # Empty = step profile.
+    "fuel_shock_path": [],
     # True restores the original rule in which a loss that is borrowed also
     # reduces total assets (the balance sheet then no longer balances). False
     # keeps TA = TL + Equity; it only changes years with negative net income.
@@ -359,9 +365,12 @@ DEFAULT_SHOCK_PARAMS = {
 }
 
 # Cash and financing settings for the shock engine (Shock Scenarios → "Cash &
-# financing"). These defaults reproduce the original model: the State pays its
+# financing"). These defaults reproduce the original model — the State pays its
 # compensation in full in the same year, and any cash shortfall is long-term
-# debt with no interest, so current liabilities stay flat.
+# debt with no interest, so current liabilities stay flat — with one exception:
+# an SOE whose data report "Cash and Equivalents" pays a shortfall out of that
+# cash first (cash_buffer_share = 1), and borrows only the rest. Set
+# cash_buffer_share to 0 to borrow everything, as before.
 DEFAULT_CASH_SETTINGS = {
     "comp_paid_share": 1.0,             # share of recognised State compensation paid in the same year
     "comp_backlog_collected": 1.0,      # share of the opening State receivable collected during the year
@@ -371,22 +380,33 @@ DEFAULT_CASH_SETTINGS = {
     "new_debt_interest_rate": 0.0,      # annual interest rate on the new bank and long-term debt
     "vat_rate": 0.18,                   # VAT rate applied to the extra fuel bill (Senegal standard rate)
     "vat_trapped_share": 0.0,           # share of that input VAT that cannot be offset or refunded
+    "fuel_oil_linkage": 1.0,            # share of the fuel bill whose price moves with the oil shock (1 = all of it)
+    "tariff_revenue_base": "revenue",   # base of the tariff increase: "revenue" or "revenue_ex_grants" (Revenue - Government Grants)
+    "cash_buffer_share": 1.0,           # share of a cash shortfall paid from opening cash before borrowing (0 = borrow everything)
+    "cash_floor_opex_share": 0.0,       # cash kept back, as a share of operating expense (not drawn)
 }
 
 # "Oil +60% with delayed State payment" preset on the Shock Scenarios page —
-# the SENELEC review assumptions. The fuel shock itself (+60%) is set by the
-# preset button; these are the exposure and cash settings it applies.
+# the SENELEC assumptions (sources in PARAMETER_REGISTER below). The fuel price
+# path (+60% in 2026, +30% in 2027 from a 2024 base year) is set by the preset
+# button together with a horizon of at least 5 years; these are the exposure
+# and cash settings it applies. fuel_shock_pct is the path's peak: it labels
+# the button and centres the Monte Carlo draws (the engine reads the path).
 OIL_SHOCK_PRESET = {
     "fuel_shock_pct": 0.60,
-    "fuel_cost_share": 0.70,            # fuel + fuel-indexed IPP purchases: 60–80% of OpEx in the review note
+    "fuel_shock_path": [0.0, 0.60, 0.30, 0.0, 0.0],  # 2025–2029: +60% in 2026, half of it in 2027, then back
+    "fuel_cost_share": 0.55,            # fuel purchases 494.9 bn / opex 888.5 bn (2022); IPP purchases excluded
+    "fuel_oil_linkage": 0.9,            # HFO and diesel follow oil; coal (35.7 of 494.9 bn) does not
     "tariff_passthrough": 0.0,          # tariffs frozen (Option A)
     "fuel_subsidy_share": 1.0,          # the State compensates the whole RMA gap
-    "comp_paid_share": 0.30,            # review proxy; a ~300-day Treasury lag is closer to 0.18 (1 - 300/365)
-    "comp_backlog_collected": 1.0,
+    "comp_paid_share": 0.60,            # 2022: 333.2 bn recognised, 135.8 bn still owed at year-end
+    "comp_backlog_collected": 1.0,      # the rest is collected the next year
     "comp_provision_share": 0.0,
     "cash_gap_short_term_share": 1.0,   # overdrafts, short-term loans, supplier credit
     "cash_gap_payables_share": 0.0,
-    "new_debt_interest_rate": 0.08,     # PLACEHOLDER — replace with the SOE's short-term borrowing cost
+    "new_debt_interest_rate": 0.033,    # interest 14.6 bn / borrowings 430.8 bn (2024)
+    "vat_trapped_share": 0.0,
+    "tariff_revenue_base": "revenue_ex_grants",  # 214.7 bn of RMA compensation sits inside revenue
 }
 
 # Exposure starting values when an SOE's data carry no exposure columns
@@ -752,8 +772,9 @@ PARAMETER_REGISTER = [
        "Illustrative; calibrate from sovereign/SOE spread episodes", "Standard stress"),
     _p("Shock magnitudes", "Government arrears (standard stress)", f"{_S['arrears_pct_of_revenue']:.0%} of revenue a year", "placeholder",
        "Illustrative; calibrate from arrears data where available", "Standard stress"),
-    _p("Shock dynamics", "Shock profile", f"full magnitude for {_S['shock_duration_years']} years, then off (no AR(1))", "design",
-       "Step profile chosen for transparency; persistence (years) to be justified from data — the tool does not use an AR(1) process", "Shock Scenarios, Monte Carlo"),
+    _p("Shock dynamics", "Shock profile", f"full magnitude for {_S['shock_duration_years']} years, then off (no AR(1)); fuel can follow a per-year path instead", "design",
+       "Step profile chosen for transparency; persistence (years) to be justified from data — the tool does not use an AR(1) process. "
+       "The fuel channel also takes an explicit annual price path (fuel_shock_path), as the IMF SOE Stress Test Tool does for oil", "Shock Scenarios, Monte Carlo"),
     _p("Shock dynamics", "Projection horizon", f"{MC_HORIZON_YEARS} years (1–7)", "user", "Set by the user", "Shock Scenarios"),
     _p("Exposures", "Sector fuel cost share of opex", ", ".join(f"{k} {v:.0%}" for k, v in SECTOR_FUEL_COST_SHARE.items()), "literature",
        "SOE fuel-shock framework note (April 2026, internal) — source table to cite; used only when the SOE's own fuel data are missing", "Fuel shock"),
@@ -767,20 +788,32 @@ PARAMETER_REGISTER = [
        "Set by the user; the compensated amount is reported as a fiscal cost next to EFC", "Fuel shock"),
     _p("Fuel policy and cash", "End-user tariff increase", f"{_S['tariff_increase_pct']:.0%} (Option A freeze); 10–15% for Option B", "user",
        "Policy scenario set by the user", "Fuel shock"),
-    _p("Fuel policy and cash", "State compensation paid in the same year", f"{DEFAULT_CASH_SETTINGS['comp_paid_share']:.0%} (oil preset {OIL_SHOCK_PRESET['comp_paid_share']:.0%})", "placeholder",
-       "Review note on SENELEC: Treasury transfers take about 300 days (≈18% paid in-year); 30% used as a proxy", "Shock Scenarios"),
+    _p("Fuel policy and cash", "State compensation paid in the same year", f"{DEFAULT_CASH_SETTINGS['comp_paid_share']:.0%} (oil preset {OIL_SHOCK_PRESET['comp_paid_share']:.0%})", "literature",
+       "SENELEC 2022: 333.2 bn of RMA compensation recognised and 135.8 bn still receivable from the State at year-end (≈60% paid in-year); the 100% default keeps the original model", "Shock Scenarios"),
     _p("Fuel policy and cash", "Unpaid compensation collected the next year", f"{DEFAULT_CASH_SETTINGS['comp_backlog_collected']:.0%}", "placeholder",
        "Assumes payment lags under a year; lower it where arrears to the SOE pile up", "Shock Scenarios"),
     _p("Fuel policy and cash", "Unpaid compensation written off as a loss", f"{DEFAULT_CASH_SETTINGS['comp_provision_share']:.0%}", "user",
        "0% keeps it as a receivable; 100% is the 'treat unpaid compensation as a loss' proxy", "Shock Scenarios"),
     _p("Fuel policy and cash", "Cash gap funded short-term / via supplier arrears", f"{DEFAULT_CASH_SETTINGS['cash_gap_short_term_share']:.0%} / {DEFAULT_CASH_SETTINGS['cash_gap_payables_share']:.0%} (oil preset {OIL_SHOCK_PRESET['cash_gap_short_term_share']:.0%} / {OIL_SHOCK_PRESET['cash_gap_payables_share']:.0%})", "design",
        "0% reproduces the original model (losses funded long-term, current liabilities flat)", "Shock Scenarios"),
-    _p("Fuel policy and cash", "Interest rate on new borrowing", f"{DEFAULT_CASH_SETTINGS['new_debt_interest_rate']:.0%} (oil preset {OIL_SHOCK_PRESET['new_debt_interest_rate']:.0%})", "placeholder",
-       "Replace with the SOE's short-term borrowing cost from its financial statements", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Interest rate on new borrowing", f"{DEFAULT_CASH_SETTINGS['new_debt_interest_rate']:.1%} (oil preset {OIL_SHOCK_PRESET['new_debt_interest_rate']:.1%})", "literature",
+       "SENELEC 2024: interest expense 14.6 bn / borrowings 430.8 bn = 3.4%, rounded to 3.3%; the 0% default keeps the original model. Replace with the SOE's own borrowing cost", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Cash drawn before borrowing (cash-first)", f"{DEFAULT_CASH_SETTINGS['cash_buffer_share']:.0%} of the shortfall, from 'Cash and Equivalents'", "design",
+       "IMF SOE Stress Test Tool User Guide (2023), Section VIII: liquidity gaps are met from cash first, then borrowing, then injections; "
+       "many SOEs cannot borrow quickly. 0% restores the original borrow-everything rule; inert when the data report no cash", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Cash floor kept back", f"{DEFAULT_CASH_SETTINGS['cash_floor_opex_share']:.0%} of operating expense", "design",
+       "Minimum operating cash not drawn; 0% lets the whole opening balance be used. Set from the SOE's own cash-management rule", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Tariff increase base", f"{DEFAULT_CASH_SETTINGS['tariff_revenue_base']} (oil preset {OIL_SHOCK_PRESET['tariff_revenue_base']})", "literature",
+       "SENELEC 2024: 214.7 bn of RMA compensation is booked inside revenue (1,015.2 bn), so a +15% tariff applies to customer sales (800.5 bn) only", "Fuel shock"),
     _p("Fuel policy and cash", "Input VAT on the extra fuel bill", f"rate {DEFAULT_CASH_SETTINGS['vat_rate']:.0%}, unrecovered {DEFAULT_CASH_SETTINGS['vat_trapped_share']:.0%}", "placeholder",
        "Senegal standard VAT rate; the unrecovered share depends on the SOE's VAT-exempt sales", "Shock Scenarios"),
-    _p("Fuel policy and cash", "Oil-shock preset (fuel shock, fuel cost share)", f"+{OIL_SHOCK_PRESET['fuel_shock_pct']:.0%}, {OIL_SHOCK_PRESET['fuel_cost_share']:.0%} of OpEx", "proxy",
-       "SENELEC review note: fuel and IPP purchases are 60–80% of operating expenses", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Oil-shock preset: fuel price path", "/".join(f"{v:+.0%}" for v in OIL_SHOCK_PRESET["fuel_shock_path"]) + " (years 1–5)", "literature",
+       "Task team scenario (email of 16 Oct 2026): oil and HFO +60% in 2026; +30% in 2027 is a half-reversion assumption, then back to the base price", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Oil-shock preset: fuel share of operating expense", f"{OIL_SHOCK_PRESET['fuel_cost_share']:.0%} of OpEx", "literature",
+       "SENELEC annual report 2022: fuel purchases 494.9 bn / operating expense 888.5 bn = 0.557, rounded down; IPP electricity purchases excluded (0.70 sensitivity)", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Oil linkage of the fuel bill", f"{DEFAULT_CASH_SETTINGS['fuel_oil_linkage']:g} (oil preset {OIL_SHOCK_PRESET['fuel_oil_linkage']:g})", "literature",
+       "SENELEC annual report 2022: HFO 361.9 bn and coal 35.7 bn within 494.9 bn of fuel purchases; coal does not follow the oil price, so about 0.9 of the bill does. "
+       "With the fuel share it is the IMF tool's 'share of oil in purchased inputs'", "Fuel shock"),
     _p("Exposures", "Revenue volatility fallback", ", ".join(f"{k} {v:.0%}" for k, v in SECTOR_REVENUE_VOLATILITY.items()), "placeholder",
        "Used only when an SOE has fewer than three years of revenue", "Revenue shock"),
     _p("Monte Carlo", "Fuel / FX standard deviations", f"{MC_DEFAULT_FUEL_STD:.0%} / {MC_DEFAULT_FX_STD:.0%}", "placeholder",

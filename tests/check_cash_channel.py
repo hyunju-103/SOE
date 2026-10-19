@@ -59,6 +59,14 @@ def original_run_scenario(b, p, H):
     return out
 
 
+# The oil preset as it stood when the cash channel was added (fuel shock in year 1, 30% paid in-year, 8%):
+# tests 4 and 5 check the arithmetic on these round numbers, independently of later preset recalibrations.
+LEGACY_OIL = {
+    "fuel_shock_pct": 0.60, "fuel_cost_share": 0.70, "tariff_passthrough": 0.0, "fuel_subsidy_share": 1.0,
+    "comp_paid_share": 0.30, "comp_backlog_collected": 1.0, "comp_provision_share": 0.0,
+    "cash_gap_short_term_share": 1.0, "cash_gap_payables_share": 0.0, "new_debt_interest_rate": 0.08,
+}
+
 COLS = ["EBIT", "Retained Earnings", "Equity", "Total Liabilities", "Total Assets", "Current Assets", "Current Liabilities"]
 
 
@@ -124,7 +132,7 @@ def main():
                    "Total Assets": 3000.0, "Total Liabilities": 2200.0, "Equity": 800.0, "Retained Earnings": 50.0,
                    "Interest Expense": 40.0, "Tax Expense": 0.0, "Depreciation": 0.0})
     base = dict(zero, **config.DEFAULT_CASH_SETTINGS)
-    a = dict(base, **config.OIL_SHOCK_PRESET)                                    # Option A, 30% paid in-year
+    a = dict(base, **LEGACY_OIL)                                                 # Option A, 30% paid in-year
     pa = shocks.run_scenario(U, a, 3)
     inc = 0.70 * 900 * 0.60
     exp = {"Fuel Cost Change": inc, "Direct Fuel Subsidy": inc, "State Compensation Receivable": inc * 0.7}
