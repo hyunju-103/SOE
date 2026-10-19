@@ -35,7 +35,7 @@ This extends the oil-shock cash channel already in the tool. It adds only what t
 ### D. Cash-first financing (`cash_buffer_share`, `cash_floor_opex_share`)
 
 - **What changed.** The engine carries a `Cash` state, the opening `Cash and Equivalents` (0 when not reported). When a year has a cash need, it first draws `min(need, max(0, Cash − floor × OpEx)) × share` from cash. Only the rest is borrowed, grossed up for half a year of interest as before. The draw lowers Cash, current assets and total assets. In a surplus year, after short-term debt is repaid, the leftover rebuilds Cash and current assets only up to the cumulative drawdown of earlier years. Any remainder goes to total assets only, as before. New output columns: `Cash` (stock) and `Cash Drawdown` (flow). `Cash Funding Gap` is now the amount borrowed after cash. The rule is off when the data report no cash, when the share is 0, or when `legacy_loss_assets=True`.
-- **Why.** Many SOEs in developing countries cannot borrow quickly (Hiro's decision 4, 19 Oct). The IMF SOE Stress Test Tool User Guide (2023, Section VIII) meets liquidity gaps from cash first, then borrowing, then injections.
+- **Why.** Many SOEs in developing countries cannot borrow quickly (team decision, 19 Oct 2026). The IMF SOE Stress Test Tool User Guide (2023, Section VIII) meets liquidity gaps from cash first, then borrowing, then injections.
 - **Balance sheet.** With draw d: ΔTA = Δreceivable + VAT − d, ΔTL = funding − repaid, ΔE = NI. Because funding − interest_new = need − d, ΔTA = ΔTL + ΔE holds (tested to 1e-6).
 - **Default.** Share 1.0 and floor 0.0. This is the one default that changes outputs, for SOEs that report cash and run a shortfall. Rebuilding is capped at the drawdown so that the no-shock path of a profitable SOE stays bit-exact.
 - **How to turn it off.** `cash_buffer_share = 0` (the "Cash drawn before borrowing" slider at 0%).
@@ -51,7 +51,7 @@ This extends the oil-shock cash channel already in the tool. It adds only what t
 | ε oil linkage | — | 0.9 | HFO 361.9 and coal 35.7 within 494.9 bn (AR 2022) |
 | θ pass-through / σ State share | 0 / 1 | 0 / 1 | Tariff frozen; the State compensates the RMA gap |
 | ρ paid in-year | 0.30 | 0.60 | 2022: 333.2 bn recognised, 135.8 bn still receivable at year-end |
-| Backlog collected / provision | 1.0 / 0 | 1.0 / 0 | Receivable paid with a lag (decision 1); write-off = sensitivity |
+| Backlog collected / provision | 1.0 / 0 | 1.0 / 0 | Receivable paid with a lag (team decision, 19 Oct 2026: SENELEC's 2022 pattern); write-off = sensitivity |
 | Short-term share / payables | 1.0 / 0 | 1.0 / 0 | Overdrafts and short-term loans |
 | Interest on new debt | 8% (placeholder) | 3.3% | Interest 14.6 bn / borrowings 430.8 bn (2024) = 3.4%, rounded |
 | Trapped VAT | default 0 | 0 | 2024 VAT credit not in the workbook |
@@ -92,10 +92,10 @@ This extends the oil-shock cash channel already in the tool. It adds only what t
 
 ## Not changed, and why
 
-- **Provision placement stays below EBIT** (Hyunju's rule). SYSCOHADA would present a doubtful-receivable provision above the operating result. This is an open convention, and it does not matter under the headline treatment (receivable paid with a lag, provision 0).
+- **Provision placement stays below EBIT** (Hyunju's rule). SYSCOHADA would present a doubtful-receivable provision above the operating result. This is an open convention, and it does not matter under the headline treatment for SENELEC (receivable paid with a lag, provision 0).
 - **`legacy_loss_assets=False` is kept** (TA = TL + E, patch P1). Legacy mode also switches cash-first off, so `legacy_loss_assets=True` still reproduces the original formula exactly.
 - **The arrears channel is unchanged.** It has no offsetting entry by design, and the identity tests net it out.
-- **No tariff persistence.** Option B applies in shock years only (decision 2). In practice past increases were not reversed (Senegal 2023), so B is a lower bound on the tariff relief.
+- **No tariff persistence.** Option B applies in shock years only (team decision, 19 Oct 2026). In practice past increases were not reversed (Senegal 2023), so B is a lower bound on the tariff relief.
 - **IPP purchases stay outside φ** in the base case (SENELEC parameter table); φ 0.70 is the sensitivity that includes them.
 - **No demand response.** Revenue and OpEx are held at base-year values, as in the rest of the engine.
 - **Borrowing split, interest gross-up and repayment order are unchanged.** Cash-first only reduces what goes into them.
