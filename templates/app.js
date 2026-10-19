@@ -507,14 +507,22 @@
       else o[k] = r[k] === null || r[k] === undefined ? "" : String(r[k]);
     }
     return o;
-  }).filter((r) => r.Entity && ok(r.Year)).map((r) => Object.assign(r, { Year: Math.trunc(r.Year), Sector: r.Sector || "Other" }));
+  }).filter((r) => r.Entity && ok(r.Year)).map((r) => Object.assign(r, {
+    Year: Math.trunc(r.Year),
+    Sector: /^(utility|utilities|electricity utility)$/i.test(String(r.Sector || "").trim()) ? "Power / Utilities" : (r.Sector || "Other")
+  }));
   function unitScale(u) { u = String(u || "").toLowerCase(); return u.includes("billion") ? 1e9 : u.includes("million") ? 1e6 : u.includes("thousand") ? 1e3 : 1; }
 
   function loadDataset(rows, label, example, key) {
     S.rows = coerceRows(rows);
     S.en = E.enrich(S.rows);
     S.label = label; S.example = !!example; S.key = key;
-    if (key !== "upload") { S.mapping = null; S.uploadNote = null; }
+    if (key !== "upload") {
+      S.mapping = null; S.uploadNote = null; S.uploadExtras = null;
+      // Clear supplemental elements cached inside other tabs when switching
+      // back to built-in data. They must never remain visible after reset.
+      document.querySelectorAll(".upload-support-card").forEach((node) => node.remove());
+    }
     CUR = (S.rows.find((r) => r.Currency) || {}).Currency || "";
     SC = unitScale((S.rows.find((r) => r.Units) || {}).Units);
     S.sectors = uniq(S.en.map((r) => r.Sector)).sort();
@@ -537,7 +545,8 @@
     const v = S.volCache[ent];
     return ok(v) ? [v, false] : [CFG.SECTOR_REVENUE_VOLATILITY[sector] ?? CFG.SECTOR_REVENUE_VOLATILITY.Other, true];
   }
-  const MAGS = ["fuel_shock_pct", "fx_shock_pct", "rate_shock_bps", "revenue_shock_std_devs", "refinancing_spread_bps", "arrears_pct_of_revenue"];
+  const MAGS = ["fuel_shock_pct", "fx_shock_pct", "rate_shock_bps", "revenue_shock_std_devs", "refinancing_spread_bps", "arrears_pct_of_revenue", "tariff_increase_pct"];
+  const POLICY_KEYS = Object.keys(CFG.DEFAULT_CASH_SETTINGS || {}); // cash and financing settings, carried with the exposures
   const ZERO_MAG = Object.fromEntries(MAGS.map((k) => [k, 0]));
   const STD_MAG = Object.fromEntries(MAGS.map((k) => [k, CFG.DEFAULT_SHOCK_PARAMS[k]]));
   const fuelShare = (sector) => CFG.SECTOR_FUEL_COST_SHARE[sector] ?? CFG.SECTOR_FUEL_COST_SHARE.Other;
@@ -811,6 +820,7 @@
   };
   function readUpload(file, msg) {
     let headerNote = "";
+    let uploadExtras = null;
     const done = (raw) => {
       if (!raw.length) { msg.replaceChildren(el("div", { class: "alert-box warn", style: "margin-top:10px" }, "The file has no data rows.")); return; }
       const mp = E.standardizeColumns(Object.keys(raw[0]));
@@ -821,12 +831,16 @@
         msg.replaceChildren(el("div", { class: "alert-box warn", style: "margin-top:10px" }, `Missing required column(s): ${missing.join(", ")}. Check the column mapping below, rename or add these columns, and upload again.`), mappingDetails({ report: mp.report }));
         return;
       }
+      // Attach annual support flows from Grants_detail, never loan stocks or contingent guarantees.
+      // The primary sheet wins on any disagreement; the discrepancy is surfaced for review.
+      const merged = mergeSupportUpload(rows, uploadExtras);
+      S.uploadExtras = merged.meta;
       const reqNum = CFG.NUMERIC_COLUMNS.filter((c) => CFG.REQUIRED_COLUMNS.includes(c));
-      const co = coerceRows(rows);
+      const co = coerceRows(merged.rows);
       const bad = co.filter((r) => reqNum.some((c) => !ok(r[c]))).length;
       S.mapping = { report: mp.report };
-      S.uploadNote = `✓ Loaded ${pl(uniq(co.map((r) => r.Entity)).length, "SOE")}, ${co.length} SOE-year rows from ${file.name}.` + (headerNote.trim() ? " " + headerNote.trim() : "") + (bad ? ` ${bad} row(s) have non-numeric or missing required values — check the data preview below.` : "");
-      loadDataset(rows, file.name, false, "upload");
+      S.uploadNote = `✓ Loaded ${pl(uniq(co.map((r) => r.Entity)).length, "SOE")}, ${co.length} SOE-year rows from ${file.name}.` + (headerNote.trim() ? " " + headerNote.trim() : "") + (merged.meta && merged.meta.sheets.length ? ` Supplementary sheets: ${merged.meta.sheets.join(", ")}.` : "") + (merged.meta && merged.meta.conflicts.length ? ` ${merged.meta.conflicts.length} support value(s) need reconciliation.` : "") + (bad ? ` ${bad} row(s) have non-numeric or missing required values — check the data preview below.` : "");
+      loadDataset(merged.rows, file.name, false, "upload");
       showTab("home", true);
     };
     const fail = (e) => msg.replaceChildren(el("div", { class: "alert-box warn", style: "margin-top:10px" }, `Couldn't read that file: ${e}`));
@@ -844,6 +858,7 @@
       // the standard template keeps the data on a sheet named "Data" (with Dictionary and Readme sheets beside it)
       const go2 = () => file.arrayBuffer().then((buf) => {
         const wb = window.XLSX.read(buf, { type: "array" }), sh = wb.SheetNames.includes("Data") ? "Data" : wb.SheetNames[0];
+        uploadExtras = extractSupportSheets(wb); // metadata stays in browser, never bundled as default data
         take(window.XLSX.utils.sheet_to_json(wb.Sheets[sh], { header: 1, defval: null, raw: true }), wb.SheetNames.length > 1 ? `Read sheet "${sh}".` : "");
       }).catch(fail);
       if (window.XLSX) go2();
@@ -865,6 +880,12 @@
     return fmt(v, Math.abs(v) >= 100 ? 0 : Math.abs(v) >= 10 ? 1 : 2) + "×";
   }
   const kpiTitle = (k) => `${SPEC[k].label} (${SPEC[k].unit === "%" ? "%" : "x"})`;
+  function missingKpiMessage(k) {
+    const missing = (SPEC[k].requires || []).filter((field) => !S.rows.some((r) => ok(r[field])));
+    return missing.length
+      ? `Data unavailable — ${SPEC[k].label} requires ${missing.join(", ")}. These inputs are not reported in the current dataset.`
+      : `Data unavailable — ${SPEC[k].label} has no valid observations for the selected SOE, years or denominator.`;
+  }
   function kpiTick(key) { return SPEC[key].unit === "%" ? (t, s) => fmt(t * 100, !s || s * 100 >= 1 ? 0 : s * 100 >= 0.1 ? 1 : 2) + "%" : (t, s) => tickLab(t, s) + "×"; }
   function cutText(key) {
     const sp = SPEC[key], f = (v) => (sp.unit === "%" ? fmt(v * 100, 0) + "%" : fmt(v, 1) + "×");
@@ -901,7 +922,7 @@
   function scorecard(rowsK, avail, keys, expanded) {
     const latest = latestOf(rowsK);
     const scored = latest.map((r) => {
-      const stt = Object.fromEntries(avail.map((k) => [k, kpiStatus(r, k)]));
+      const stt = Object.fromEntries([...new Set([...avail, ...keys])].map((k) => [k, kpiStatus(r, k)]));
       const prev = rowsK.filter((x) => x.Entity === r.Entity && x.Year < r.Year).sort((a, b) => b.Year - a.Year)[0];
       return { r, stt, prev, na: Object.values(stt).filter((s) => s.st === "alert").length, nw: Object.values(stt).filter((s) => s.st === "watch").length };
     }).sort((a, b) => b.na - a.na || a.r.Z_EM - b.r.Z_EM);
@@ -941,12 +962,17 @@
       H.out = el("div");
       H.strip = statStrip();
       root.replaceChildren(head, H.strip, el("div", { class: "card", style: "margin-bottom:16px" }, tools), H.out, foot);
-      if (!avail.length) { H.out.replaceChildren(el("div", { class: "alert-box warn" }, "None of the KPI input fields were found in the data.")); return; }
+      // Keep all views selectable even if none of their KPI source columns exists.
+      // Computable KPIs (this.avail) are still used solely for portfolio statistics.
       if (st.view === "trend") this.buildTrend();
       else if (st.view === "compare") this.buildCompare();
       else this.buildScorecard();
     },
-    catKpis(cat) { return CFG.KPI_CATEGORIES[cat].filter((k) => this.avail.includes(k)); },
+    // The registered KPI catalog is the UI menu. Input availability affects
+    // values/graphs, not visibility. Excluded legacy options (e.g. EBITDA
+    // margin) stay excluded by config.KPI_CATEGORIES.
+    // Keep this.avail for computing valid portfolio statistics only.
+    catKpis(cat) { return CFG.KPI_CATEGORIES[cat].slice(); },
     buildTrend() {
       const st = S.kpi, H = this.H, names = uniq(this.rowsK().map((r) => r.Entity)).sort();
       if (!names.includes(st.soe)) st.soe = names[0];
@@ -955,7 +981,7 @@
       CFG.CATEGORY_ORDER.forEach((cat) => {
         const ks = this.catKpis(cat), c = card(CFG.CATEGORY_LABELS[cat], null, null, "top");
         if (!ks.length) { c.body.appendChild(el("p", { class: "kpi-desc" }, "No ratios available in this category for the current data.")); grid.appendChild(c.root); return; }
-        if (!ks.includes(st.trend[cat])) st.trend[cat] = ks[0];
+        if (!ks.includes(st.trend[cat])) st.trend[cat] = ks.find((k) => this.avail.includes(k)) || ks[0];
         const chart = el("div", { class: "chart" }), desc = el("p", { class: "kpi-desc" }), btn = el("div");
         c.body.append(fSelect("Ratio", ks.map((k) => [k, kpiTitle(k)]), st.trend[cat], (v) => { st.trend[cat] = v; this.render(); }), chart, desc, btn);
         H.cards[cat] = { chart, desc, btn };
@@ -972,7 +998,7 @@
       CFG.CATEGORY_ORDER.forEach((cat) => {
         const ks = this.catKpis(cat), c = card(CFG.CATEGORY_LABELS[cat], null, null, "top");
         if (!ks.length) { c.body.appendChild(el("p", { class: "kpi-desc" }, "No ratios available in this category for the current data.")); grid.appendChild(c.root); return; }
-        if (!ks.includes(st.cmp[cat])) st.cmp[cat] = ks[0];
+        if (!ks.includes(st.cmp[cat])) st.cmp[cat] = ks.find((k) => this.avail.includes(k)) || ks[0];
         const chart = el("div", { class: "chart" }), desc = el("p", { class: "kpi-desc" }), btn = el("div");
         c.body.append(fSelect("Ratio", ks.map((k) => [k, kpiTitle(k)]), st.cmp[cat], (v) => { st.cmp[cat] = v; this.render(); }), chart, desc, btn);
         H.cards[cat] = { chart, desc, btn };
@@ -984,7 +1010,7 @@
     },
     buildScorecard() {
       const st = S.kpi, H = this.H;
-      const cats = [["headline", "Headline"], ...CFG.CATEGORY_ORDER.filter((c) => this.catKpis(c).length).map((c) => [c, CFG.CATEGORY_LABELS[c]]), ["all", "All"]];
+      const cats = [["headline", "Headline"], ...CFG.CATEGORY_ORDER.map((c) => [c, CFG.CATEGORY_LABELS[c]]), ["all", "All"]];
       H.table = el("div"); H.legend = el("div");
       const c = card("Full SOE scorecard", "Latest year per SOE within the selected years · SOEs with the most alerts come first", seg(cats, st.scCat, (v) => { st.scCat = v; this.render(); }, "KPI category"));
       H.more = el("div");
@@ -994,24 +1020,23 @@
     },
     renderStrip() {
       const av = this.avail, latest = latestOf(this.rowsK()), n = latest.length;
-      const many = latest.filter((r) => av.filter((k) => kpiStatus(r, k).st === "alert").length >= Math.ceil(av.length / 2)).length;
+      const many = av.length ? latest.filter((r) => av.filter((k) => kpiStatus(r, k).st === "alert").length >= Math.ceil(av.length / 2)).length : null;
       const medTile = (k, label) => {
-        if (!av.includes(k)) return null;
+        if (!av.includes(k)) return tile(label, null, null, "n/a", "", "Data unavailable · " + cutText(k));
         const vals = latest.map((r) => r[k]).filter(ok), v = median(vals), s2 = RAG[E.classify(v, k)[0]] || null;
         const na = n - vals.length;
         return tile(label, s2, s2 ? STLABEL[s2] : null, kpiFmt(k, v), "", `median of ${pl(vals.length, "SOE")}${na ? ` (${na} n/a)` : ""} · ${cutText(k)}`);
       };
       const g = av.includes("grants_to_revenue") ? latest.filter((r) => ok(r.grants_to_revenue) && r.grants_to_revenue > SPEC.grants_to_revenue.red_cut).length : null;
       put(this.H.strip,
-        countTile("SOEs with most KPIs in alert", many, n, `half or more of the ${av.length} ratios in alert · latest year`),
+        many === null ? tile("SOEs with most KPIs in alert", null, null, "n/a", "", "No calculable KPIs; alerts are not assessed") : countTile("SOEs with most KPIs in alert", many, n, `half or more of the ${av.length} ratios in alert · latest year`),
         medTile("operating_margin", "Median operating margin"),
         medTile("current_ratio", "Median current ratio"),
         medTile("debt_to_ebitda", "Median debt / EBITDA"),
-        g === null ? null : countTile("Grant-dependent SOEs", g, n, `grants above ${fmt(SPEC.grants_to_revenue.red_cut * 100, 0)}% of revenue`, "watch"));
+        g === null ? tile("Grant-dependent SOEs", null, null, "n/a", "", "Data unavailable · government grants not reported") : countTile("Grant-dependent SOEs", g, n, `grants above ${fmt(SPEC.grants_to_revenue.red_cut * 100, 0)}% of revenue`, "watch"));
     },
     render() {
       const st = S.kpi, H = this.H;
-      if (!this.avail || !this.avail.length) return;
       this.renderStrip();
       if (st.view === "trend") {
         const d = this.rowsK().filter((r) => r.Entity === st.soe).sort((a, b) => a.Year - b.Year);
@@ -1019,8 +1044,10 @@
           const k = st.trend[cat], { chart, desc, btn } = H.cards[cat];
           const sp = SPEC[k], xs = d.map((r) => r.Year), vals = d.map((r) => r[k]);
           desc.textContent = sp.description;
+          if (!vals.some(ok)) {
+            chart.replaceChildren(el("p", { class: "kpi-desc" }, missingKpiMessage(k))); btn.replaceChildren(); continue;
+          }
           if (d.length < 2) { chart.replaceChildren(el("p", { class: "kpi-desc" }, `Only one year of data for ${st.soe} — need at least two to plot a trend.`)); btn.replaceChildren(); continue; }
-          if (!vals.some(ok)) { chart.replaceChildren(el("p", { class: "kpi-desc" }, "No data for this ratio.")); btn.replaceChildren(); continue; }
           // one chart for any number of years: every year in the range on the x-axis (gaps where the ratio is n/a),
           // the latest year highlighted and labelled, dashed lines at the alert and good cutoffs
           lines(chart, xs, [{ vals, cls: "ln", dot: "hl", lastDot: "now", label: sp.label }], {
@@ -1037,7 +1064,7 @@
           btn.replaceChildren(dataButtons(() => toCSV(["Entity", "Sector", "Year", k], d.map((r) => [r.Entity, r.Sector, r.Year, r[k]])), `${st.soe}_${k}_trend.csv`));
         }
       } else if (st.view === "compare") {
-        const keys = this.avail;
+        const keys = CFG.CATEGORY_ORDER.flatMap((cat) => this.catKpis(cat));
         const base = periodRows(this.rowsK(), st, keys);
         const nE = uniq(base.map((r) => r.Entity)).length;
         put(H.period, el("span", {}, "Showing: ", el("b", {}, periodLabel(st)), nE > LIMIT ? ` · ${st.all ? "all " + nE + " SOEs" : `the ${LIMIT} weakest of ${nE} SOEs on each ratio`}, weakest first` : " · weakest first"),
@@ -1048,7 +1075,9 @@
           const rowsAll = base.filter((r) => ok(r[k])).sort((a, b) => dir * (a[k] - b[k]));
           const rows = clipRows(rowsAll, st.all);
           desc.textContent = SPEC[k].description;
-          if (!rows.length) { chart.replaceChildren(el("p", { class: "kpi-desc" }, "No data for this ratio in the current selection.")); btn.replaceChildren(); continue; }
+          if (!rows.length) {
+            chart.replaceChildren(el("p", { class: "kpi-desc" }, missingKpiMessage(k))); btn.replaceChildren(); continue;
+          }
           hbars(chart, rows.map((r) => {
             const s = RAG[E.classify(r[k], k)[0]] || "none";
             return { label: r.Entity, v: r[k], cls: "bar st-" + s, lab: `${GLYPH[s] || ""} ${kpiFmt(k, r[k])}`.trim(), s: slug(r.Sector), tipTitle: `${r.Entity} · ${r.Sector}`, tip: [[kpiFmt(k, r[k]), SPEC[k].label], [STLABEL[s] || "No data", cutText(k)]] };
@@ -1057,13 +1086,16 @@
         }
       } else {
         const cat = st.scCat;
-        const keys = cat === "headline" ? CFG.REPORT_HEADLINE_KPIS.filter((k) => this.avail.includes(k)) : cat === "all" ? this.avail : this.catKpis(cat);
+        const keys = cat === "headline" ? CFG.REPORT_HEADLINE_KPIS.slice() : cat === "all"
+          ? CFG.CATEGORY_ORDER.flatMap((c) => this.catKpis(c)) : this.catKpis(cat);
         const rowsK = this.rowsK(), latest = latestOf(rowsK);
+        // Only available ratios count toward the risk score. Other columns
+        // remain visible with neutral n/a cells, never fabricated zeros.
         const sc = scorecard(rowsK, this.avail, keys, st.all);
         H.table.replaceChildren(sc.table);
         put(H.more, moreToggle(latest.length, st.all, (v) => { st.all = v; this.render(); }, `Show the ${LIMIT} with most alerts only`));
         H.legend.replaceChildren(sc.legend);
-        H.btn.replaceChildren(dataButtons(() => toCSV(["Entity", "Sector", "Year", ...this.avail], latest.map((r) => [r.Entity, r.Sector, r.Year, ...this.avail.map((k) => r[k])])), "kpi_scorecard.csv"));
+        H.btn.replaceChildren(dataButtons(() => toCSV(["Entity", "Sector", "Year", ...keys], latest.map((r) => [r.Entity, r.Sector, r.Year, ...keys.map((k) => ok(r[k]) ? r[k] : "") ])), "kpi_scorecard.csv"));
       }
     },
   };
@@ -1307,13 +1339,23 @@
   const pctSig = (v) => (v > 0 ? "+" : "") + fmt(v * 100, 0) + "%";
   const SLIDERS = {
     fuel: [
-      ["fuel_cost_share", "Fuel cost share of OpEx", 0, 0.6, 0.01, pct0, "What share of this SOE's operating costs is spent on fuel. Higher share = more exposed to a fuel price shock."],
+      ["fuel_cost_share", "Fuel cost share of OpEx", 0, 1, 0.01, pct0, "What share of this SOE's operating costs is spent on fuel. Higher share = more exposed to a fuel price shock."],
       ["fuel_shock_pct", "Fuel price shock", -0.5, 1, 0.01, pctSig, CFG.GLOSSARY["Fuel shock"] + " Negative means fuel gets cheaper. 0 = no shock."],
+      ["tariff_increase_pct", "End-user tariff increase (policy)", 0, 0.3, 0.01, pctSig, "Option A = 0% (tariff freeze). Option B = +10% to +15%. Revenue rises by this share during the shock years; the rest of the fuel-cost change is then split below."],
       ["tariff_passthrough", "Tariff pass-through rate (Case B)", 0, 1, 0.05, pct0, CFG.GLOSSARY["Tariff pass-through"] + " Case B: customers pay this share of the fuel-cost change through tariffs."],
-      ["fuel_subsidy_share", "Government subsidy share (Case C)", 0, 1, 0.05, pct0, "Case C: the government pays this share of the fuel-cost change directly — a budget outlay reported as a direct fuel subsidy, on top of the expected fiscal cost. The SOE absorbs whatever customers and the government do not (Case A)."],
+      ["fuel_subsidy_share", "State compensation share (Case C)", 0, 1, 0.05, pct0, "Case C: the government compensates this share of the fuel-cost change left after any tariff increase (for SENELEC, the gap between the regulator's allowed revenue (RMA) and tariff revenue; 100% = the State covers the whole gap). It is recognised in the SOE's accounts; how much arrives as cash is set on the Cash & financing tab. The SOE absorbs whatever customers and the government do not (Case A)."],
+    ],
+    cash: [
+      ["comp_paid_share", "State compensation paid in the same year", 0, 1, 0.05, pct0, "Share of this year's recognised compensation that arrives as cash in the same year. The rest becomes a receivable on the State. A payment delay of about 300 days is roughly 18% (1 − 300/365). 100% = original model."],
+      ["comp_backlog_collected", "Unpaid compensation collected the next year", 0, 1, 0.05, pct0, "Share of the receivable at the start of a year that the Treasury pays during that year. 100% = every claim is settled within a year."],
+      ["comp_provision_share", "Unpaid compensation treated as a loss", 0, 1, 0.05, pct0, "0% = keep the unpaid amount as a receivable (net income looks stable, cash does not). 100% = write it off as a loss, the simpler proxy discussed in the review."],
+      ["cash_gap_short_term_share", "Cash gap funded short-term", 0, 1, 0.05, pct0, "Share of the cash shortfall funded by overdrafts, short-term loans or unpaid supplier bills, all current liabilities. The rest becomes long-term debt. 0% = original model (current liabilities held flat)."],
+      ["cash_gap_payables_share", "… of which unpaid supplier bills", 0, 1, 0.05, pct0, "Part of the short-term funding that comes from paying fuel suppliers and IPPs late instead of borrowing from banks. Carries no interest here."],
+      ["new_debt_interest_rate", "Interest rate on new borrowing", 0, 0.2, 0.005, (v) => fmt(v * 100, 1) + "%", "Annual rate on the new bank and long-term debt that funds the cash gap; this year's new draw pays half a year. 0% = original model."],
+      ["vat_trapped_share", "Input VAT on extra fuel not recovered", 0, 1, 0.05, pct0, `Share of the input VAT on the extra fuel bill (rate ${pct0(CFG.DEFAULT_CASH_SETTINGS.vat_rate)}, set in config.py) that cannot be offset or refunded, e.g. because many sales are VAT-exempt. A cash outflow and an illiquid current asset.`],
     ],
     fx: [
-      ["fx_shock_pct", "FX shock", -0.3, 0.6, 0.01, pctSig, CFG.GLOSSARY["FX shock"] + " Negative means the local currency strengthens. 0 = no shock."],
+      ["fx_shock_pct", "FX shock", -0.3, 1, 0.01, pctSig, CFG.GLOSSARY["FX shock"] + " Negative means the local currency strengthens. 0 = no shock."],
       ["fx_cost_share", "FX share of operating costs", 0, 1, 0.05, pct0, "What share of this SOE's costs are paid in a foreign currency (e.g. imported fuel or equipment)."],
       ["fx_revenue_share", "FX share of revenue", 0, 1, 0.05, pct0, "What share of revenue is earned in a foreign currency. If lower than the FX cost share, a weaker local currency hurts profit."],
       ["fx_debt_share", "FX share of total liabilities", 0, 1, 0.05, pct0, "What share of debt is denominated in a foreign currency. A weaker local currency revalues it upward."],
@@ -1327,7 +1369,7 @@
       ["refinancing_spread_bps", "Refinancing stress spread", -300, 1000, 25, (v) => (v > 0 ? "+" : "") + fmt(v, 0) + " bps", "0 = no shock. Extra cost of rolling over near-term debt in stressed conditions — rollover risk, distinct from floating-rate repricing."],
     ],
     arrears: [
-      ["arrears_pct_of_revenue", "Government arrears (% of revenue a year)", -0.3, 0.3, 0.01, pctSig, CFG.GLOSSARY["Government arrears"] + " Negative means the government clears existing arrears. 0 = no shock."],
+      ["arrears_pct_of_revenue", "Government arrears (% of revenue a year)", -1.3, 1.3, 0.01, pctSig, CFG.GLOSSARY["Government arrears"] + " Negative means the government clears existing arrears. 0 = no shock."],
     ],
   };
   pages.shock = {
@@ -1348,7 +1390,7 @@
         const src = st.expoSrc[k];
         return fSlider(label, { min: mn, max: mx, step, value: get(k), fmt: f, info: help, id: "sh-" + k, help: src ? `Starts at ${f(src[0])} — ${src[1]}` : null }, (v) => { set(k, v); this.fuelCheck(); this.schedule(); });
       };
-      const tabs = [["fuel", "Fuel"], ["fx", "FX"], ["rates", "Rates & revenue"], ["arrears", "Arrears & horizon"]];
+      const tabs = [["fuel", "Fuel"], ["cash", "Cash & financing"], ["fx", "FX"], ["rates", "Rates & revenue"], ["arrears", "Arrears & horizon"]];
       const sub = el("div", { class: "subtabs", role: "tablist" });
       const pbox = el("div", { class: "fields" });
       const drawTab = () => {
@@ -1364,6 +1406,8 @@
       tabs.forEach(([k, l]) => sub.appendChild(el("button", { role: "tab", type: "button", "data-t": k, onclick: () => { st.ptab = k; drawTab(); } }, l)));
       drawTab();
       const preset = (mags, D) => { Object.assign(st.mags, mags); if (D) st.D = Math.min(D, st.H); rebuild(); };
+      const oilPreset = () => { const { fuel_shock_pct, ...ex } = CFG.OIL_SHOCK_PRESET; Object.assign(st.mags, ZERO_MAG, { fuel_shock_pct }); Object.assign(st.expo, ex); rebuild(); };
+      const policy = (tu) => { st.mags.tariff_increase_pct = tu; Object.assign(st.expo, { tariff_passthrough: 0, fuel_subsidy_share: 1 }); rebuild(); };
       panel.body.append(el("div", { class: "fields" },
         el("div", { class: "fields two" },
           fSelect("SOE", S.names, st.soe, (v) => { st.soe = v; st.year = null; rebuild(); }),
@@ -1371,7 +1415,12 @@
         el("p", { class: "note", style: "margin:0" }, el("b", {}, "Bottom-up exposures. "), `The exposure sliders start from this SOE's own data where the file carries them (fuel cost, FX debt, short-term debt, exposure shares), otherwise from sector or generic defaults — the line under each slider says which. Revenue volatility ${pct(sig, 1)} (${fallback ? "sector default — fewer than 3 years of data" : "from this SOE's own history"}).`),
         el("div", { class: "presets" }, el("button", { class: "btn", type: "button", onclick: () => preset(ZERO_MAG) }, "No shock (baseline)"),
           el("button", { class: "btn", type: "button", onclick: () => preset(STD_MAG, CFG.DEFAULT_SHOCK_PARAMS.shock_duration_years) }, "Standard stress (DSA/DSF)"),
-          el("button", { class: "btn-ghost", type: "button", onclick: () => { st.expoFor = null; rebuild(); } }, "Reset exposures to this SOE's data"))),
+          el("button", { class: "btn-ghost", type: "button", onclick: () => { st.expoFor = null; rebuild(); } }, "Reset exposures to this SOE's data")),
+        el("div", { class: "presets" }, el("span", { class: "chips-label" }, "Oil shock:"),
+          el("button", { class: "btn", type: "button", onclick: oilPreset }, `Oil ${pctSig(CFG.OIL_SHOCK_PRESET.fuel_shock_pct)} with delayed State payment`),
+          el("button", { class: "btn-ghost", type: "button", onclick: () => policy(0) }, "Option A: tariff freeze"),
+          el("button", { class: "btn-ghost", type: "button", onclick: () => policy(0.1) }, "Option B: +10%"),
+          el("button", { class: "btn-ghost", type: "button", onclick: () => policy(0.15) }, "Option B: +15%"))),
         el("hr", { class: "divider" }), sub, pbox, el("hr", { class: "divider" }),
         el("div", { class: "fields" },
           fSlider("LGD", { min: CFG.LGD_SLIDER_MIN, max: CFG.LGD_SLIDER_MAX, step: 1, value: st.lgd, fmt: (v) => v + "%", info: CFG.GLOSSARY.LGD }, (v) => { st.lgd = v; this.schedule(); }),
@@ -1387,8 +1436,8 @@
         H.strip,
         el("div", { class: "grid" }, el("div", { class: "s4 sticky-panel" }, panel.root), el("div", { class: "s8" }, el("div", { class: "card" }, el("div", { class: "row-ctl" }, el("div", { class: "fld" }, el("span", { class: "lbl" }, "View"), H.view)), H.desc), H.out)),
         el("div", { class: "foot" },
-          el("div", {}, el("b", {}, "Simplifications. "), "Tax expense and current liabilities are held flat; net income carries the reported figure plus the shock's effect on EBIT and interest; losses are assumed debt-financed; operating expense and revenue are held at base-year values."),
-          el("div", {}, el("b", {}, "Fuel cost split. "), "A fuel-cost change is shared between customers (tariff pass-through, Case B), the government (subsidy share, Case C — a direct budget outlay) and the SOE (the rest, Case A). With both at zero the SOE absorbs it all."),
+          el("div", {}, el("b", {}, "Simplifications. "), "Tax expense is held flat; net income carries the reported figure plus the shock's effect on EBIT and interest; any cash shortfall (losses, unpaid State compensation, trapped VAT) is borrowed — in current liabilities for the short-term share on the Cash & financing tab, otherwise as long-term debt; operating expense and revenue are held at base-year values."),
+          el("div", {}, el("b", {}, "Fuel cost split. "), "A tariff increase (policy Option B) is applied first. What is left of the fuel-cost change is shared between customers (tariff pass-through, Case B), the government (compensation share, Case C) and the SOE (the rest, Case A). Government compensation is recognised as revenue when due but arrives as cash only at the in-year paid share; the rest is a receivable on the State."),
           el("div", {}, el("b", {}, "Monte Carlo. "), "Fuel and FX shock magnitudes are always drawn from a correlated normal distribution around their sliders; the interest-rate and revenue shocks are drawn too when their standard deviation is above zero, with the correlations you set. Every other parameter stays at its slider value. The seed is fixed, so identical settings reproduce identical results.")));
       this.fuelCheck();
       if (st.view === "single") this.buildSingle(); else if (st.view === "mc") this.buildMC(); else this.buildAll();
@@ -1407,7 +1456,8 @@
       H.e = card("Expected fiscal cost path", null); H.e.body.append(legendRow([legendItem(LG.str, "Stressed"), legendItem(LG.base, "No shock")]), el("div", { class: "chart" }));
       H.imp = card("KPI impact (base → final year)", "Change in each Z-EM component; weighted = change × coefficient"); H.tor = card("Tornado — driver of Z-EM change", "Weighted contribution to the change in Z″, base year to final year"); H.tor.body.append(el("div", { class: "chart" }));
       H.proj = card("Full projection", null);
-      H.out.replaceChildren(H.subsidy, el("div", { class: "grid" }, el("div", { class: "s6" }, H.z.root), el("div", { class: "s6" }, H.e.root)), el("div", { class: "grid" }, el("div", { class: "s5" }, H.tor.root), el("div", { class: "s7" }, H.imp.root)), H.proj.root);
+      H.cash = card("Liquidity & State compensation", "Who pays for the fuel-cost change, what arrives as cash, and how the gap is funded");
+      H.out.replaceChildren(H.subsidy, H.cash.root, el("div", { class: "grid" }, el("div", { class: "s6" }, H.z.root), el("div", { class: "s6" }, H.e.root)), el("div", { class: "grid" }, el("div", { class: "s5" }, H.tor.root), el("div", { class: "s7" }, H.imp.root)), H.proj.root);
     },
     buildMC() {
       const st = S.sh.mc, H = this.H;
@@ -1422,7 +1472,7 @@
       };
       const sdSlider = (label, key, o, info) => fSlider(label, Object.assign({ value: st[key], info }, o), (v) => { const was = st[key] > 0; st[key] = v; if (was !== v > 0) drawCorr(); this.schedule(); });
       const set = el("div", { class: "fields two" },
-        fSlider("Simulations", { min: 100, max: 5000, step: 100, value: st.n, fmt: (v) => v.toLocaleString("en-US"), info: "How many random shock draws to run." }, (v) => { st.n = v; this.schedule(); }),
+        fSlider("Simulations", { min: 100, max: 10000, step: 100, value: st.n, fmt: (v) => v.toLocaleString("en-US"), info: "How many random shock draws to run." }, (v) => { st.n = v; this.schedule(); }),
         el("div"),
         sdSlider("Fuel shock std. dev.", "fsd", { min: 0.01, max: 0.3, step: 0.01, fmt: pct0 }, "Spread of the fuel shock across simulations, centred on the Fuel slider."),
         sdSlider("FX shock std. dev.", "xsd", { min: 0.01, max: 0.3, step: 0.01, fmt: pct0 }, "Spread of the FX shock across simulations, centred on the FX slider."),
@@ -1455,12 +1505,47 @@
       else if (st.view === "mc") this.renderMC(b, p, gs);
       else this.renderAll(gs);
     },
+    renderCash(path, base, p) {
+      const st = S.sh, H = this.H, f = last(path), f0 = path[0], fb = last(base);
+      const yrs = path.slice(1), tot = (k) => sum(yrs.map((r) => r[k] || 0));
+      const fuelUp = tot("Fuel Cost Change"), tariffUp = tot("Tariff Increase Revenue"), passT = tot("Tariff Pass-through");
+      const recog = tot("Direct Fuel Subsidy"), paid = tot("State Compensation Paid"), gap = tot("Cash Funding Gap");
+      const show = fuelUp !== 0 || recog !== 0 || (p.cash_gap_short_term_share || 0) > 0; // the fuel / cash channel is in play
+      H.cash.root.hidden = !show;
+      if (!show) return;
+      const prov = tot("Compensation Provision"), unpaidEnd = f["State Compensation Receivable"];
+      const peak = path.reduce((m, r) => (r["State Compensation Receivable"] > m["State Compensation Receivable"] ? r : m), path[0]);
+      const soe = Math.max(0, fuelUp - tariffUp - passT - recog);
+      const cr = (r) => fmt(r["Current Ratio"], 2), acr = (r) => fmt(r["Adjusted Current Ratio"], 2);
+      const tiles = el("div", { class: "grid4 sm" },
+        tile("State compensation recognised", recog > 0 ? "watch" : null, recog > 0 ? "Obligation" : null, money(recog), CUR, "booked as SOE revenue over the projection"),
+        tile("Paid in cash by the budget", null, null, money(paid), CUR, recog > 0 ? `${pct0(p.comp_paid_share ?? 1)} in the year it is due, the rest later` : "—"),
+        tile("Peak unpaid State compensation", peak["State Compensation Receivable"] > 0 ? "alert" : "ok", peak["State Compensation Receivable"] > 0 ? "Arrears" : "None", money(peak["State Compensation Receivable"]), CUR,
+          `${peak["Calendar Year"]} · ${money(unpaidEnd)} still unpaid in ${f["Calendar Year"]}` + (prov ? ` · ${money(prov)} written off` : "")),
+        tile("Cash funding gap", gap > 0 ? "watch" : "ok", gap > 0 ? "Borrowed" : "None", money(gap), CUR, `new short-term debt ${money(f["New Short-term Debt"])} · supplier arrears ${money(f["Supplier Arrears"])} · interest ${money(tot("Interest on New Debt"))}`),
+        tile("Current ratio", f["Current Ratio"] < f0["Current Ratio"] ? "watch" : null, null, cr(f), "", `from ${cr(f0)} · adjusted for illiquid State and VAT claims: ${acr(f)}`),
+        tile("Debt to assets", f["Debt to Assets"] > fb["Debt to Assets"] ? "watch" : null, null, fmt(f["Debt to Assets"], 2), "", `no shock ${fmt(fb["Debt to Assets"], 2)}`));
+      const split = [
+        ["Customers", "tariff ↑", tariffUp], ["Customers", "pass-through", passT],
+        ["State", "paid", paid], ["State", "unpaid", unpaidEnd + prov], ["SOE", "absorbs", soe],
+      ].filter((r) => Math.abs(r[2]) > 0);
+      const chart = el("div", { class: "chart" });
+      const yrRows = path.map((r, i) => [String(r["Calendar Year"]) + (i === 0 ? " base" : ""), money(r["Fuel Cost Change"]), money(r["Tariff Increase Revenue"]), money(r["Direct Fuel Subsidy"]), money(r["State Compensation Paid"]),
+        money(r["State Compensation Receivable"]), money(r["Cash Funding Gap"]), money(r["New Short-term Debt"]), money(r["Interest on New Debt"]), money(r["Net Income"]), cr(r), acr(r), fmt(r["Debt to Assets"], 2)]);
+      H.cash.body.replaceChildren(tiles,
+        el("div", { class: "grid", style: "margin-top:16px" },
+          el("div", { class: "s5" }, el("h3", { style: "font-size:13.5px;margin-bottom:6px" }, `Who pays the fuel-cost change (${money(fuelUp, true)})`), chart),
+          el("div", { class: "s7" }, el("p", { class: "note", style: "margin-top:0" }, "Net income stays close to the no-shock path because recognised compensation counts as revenue, but only the in-year paid share arrives as cash; the receivable is funded by borrowing. When the current ratio starts below 1, adding the receivable to current assets and the new debt to current liabilities can even lift the reported ratio. The adjusted ratio leaves out the State receivable and trapped VAT, and shows the liquidity squeeze."))),
+        el("div", { style: "margin-top:12px" }, simpleTable(["Year", "Fuel cost Δ", "Tariff ↑", "State recognised", "State paid", "Receivable", "Cash gap", "New ST debt", "New interest", "Net income", "Current ratio", "Adjusted", "Debt / assets"], yrRows, { right: (i) => i >= 1, cls: "compact" })));
+      if (!split.length) { chart.append(el("p", { class: "note" }, "No fuel-cost change in this scenario.")); return; }
+      hbars(chart, split.map(([who, what, v]) => ({ label: who, sub: what, v, cls: "bar" + (who === "SOE" || what === "unpaid" ? " neg" : ""), lab: money(v), tipTitle: `${who} — ${what}`, tip: [[money(v, true), fuelUp ? `${pct0(v / fuelUp)} of the fuel-cost change` : ""]] })), { L: 120, R: 80, nTicks: 4, tick: (t, s) => moneyTick(t, s) });
+    },
     renderSingle(b, p, gs) {
       const st = S.sh, H = this.H;
       const path = E.costPath(E.runScenario(b, p, st.H), st.lgd, gs, st.ead), base = E.costPath(E.runScenario(b, this.params(ZERO_MAG), st.H), st.lgd, gs, st.ead);
       const f = last(path), f0 = path[0], fb = last(base), mig = f0.Zone !== f.Zone;
       const subT = sum(path.map((r) => r["Direct Fuel Subsidy"])), hasSub = !!p.fuel_subsidy_share;
-      put(H.subsidy, subT ? el("div", { class: "alert-box warn", style: "margin-bottom:16px" }, el("span", {}, el("b", {}, `Direct fuel subsidy: ${money(subT, true)} over ${pl(Math.min(st.D, st.H), "year")}`),
+      put(H.subsidy, subT ? el("div", { class: "alert-box warn", style: "margin-bottom:16px" }, el("span", {}, el("b", {}, `State fuel compensation: ${money(subT, true)} over ${pl(Math.min(st.D, st.H), "year")}`),
         subT > 0 ? ` — a budget outlay on top of the expected fiscal cost, because the government absorbs ${pct0(p.fuel_subsidy_share)} of the fuel-cost change (Case C).` : ` — negative: cheaper fuel lowers the ${pct0(p.fuel_subsidy_share)} share the government covers, a budget saving.`,
         gs ? ` That is ${pctS(subT / gs[1])} of year-1 GDP.` : "")) : null);
       put(H.strip,
@@ -1468,7 +1553,8 @@
         tile("Final-year EFC", null, null, money(f.EFC), CUR, `No shock: ${money(fb.EFC)} · ${sgn(fb.EFC ? (f.EFC / fb.EFC - 1) * 100 : NaN, 0)}%`),
         tile("Zone migration", mig ? "watch" : "ok", mig ? "Yes" : "No", mig ? "Yes" : "No", "", `${f0.Zone} → ${f.Zone} by ${f["Calendar Year"]}`),
         tile("Final-year EFC / GDP", null, null, gs ? pctS(f.EFC_GDP) : "—", "", gs ? `GDP projected at ${fmt(S.growth * 100, 1)}%/yr` : "Enter GDP in the panel to populate"),
-        hasSub ? tile("Direct fuel subsidy", subT > 0 ? "watch" : "ok", subT > 0 ? "Outlay" : "Saving", money(subT), CUR, `government share ${pct0(p.fuel_subsidy_share)} of the fuel-cost change`) : null);
+        hasSub ? tile("State compensation", subT > 0 ? "watch" : "ok", subT > 0 ? "Recognised" : "Saving", money(subT), CUR, `government share ${pct0(p.fuel_subsidy_share)} · ${pct0(p.comp_paid_share ?? 1)} paid in-year`) : null);
+      this.renderCash(path, base, p);
       const xs = path.map((r) => r["Calendar Year"]);
       const tipRows = (i) => [[fmt(path[i].Z_EM, 2), `stressed · ${path[i].Rating} · ${path[i].Zone}`], [fmt(base[i].Z_EM, 2), `no shock · ${base[i].Rating}`], [money(path[i].EFC), `EFC stressed (no shock ${money(base[i].EFC)})`]];
       lines(H.z.body.lastChild, xs, [{ vals: base.map((r) => r.Z_EM), cls: "ln-base", dot: "prev", skipFirstDot: true, label: "No shock" }, { vals: path.map((r) => r.Z_EM), cls: "ln-str", dot: "now", label: "Stressed" }],
@@ -1484,10 +1570,10 @@
         el("p", { class: "note" }, "Weighted ΔZ = (final − base ratio) × coefficient. “vs no shock” measures the same against the no-shock path's final year, which isolates the effect of the shock itself."));
       const tor = imp.slice().sort((a, b2) => Math.abs(b2.weighted) - Math.abs(a.weighted));
       hbars(H.tor.body.firstChild, tor.map((r) => ({ label: r.key, sub: SHORT[r.key], v: r.weighted, cls: "bar" + (r.weighted < 0 ? " neg" : ""), lab: sgn(r.weighted, 2), tipTitle: r.Component, tip: [[sgn(r.weighted, 3), "weighted contribution to ΔZ″"], [`${fmt(r.base, 3)} → ${fmt(r.final, 3)}`, "ratio, base → final"]] })), { L: 120, R: 60, nTicks: 4 });
-      const heads = ["Year", "EBIT", "Equity", "Liabilities", "Z-EM", "No shock", "Zone", "Rating", "PD", "EFC", ...(hasSub ? ["Fuel subsidy"] : []), ...(gs ? ["EFC / GDP"] : [])];
+      const heads = ["Year", "EBIT", "Equity", "Liabilities", "Z-EM", "No shock", "Zone", "Rating", "PD", "EFC", ...(hasSub ? ["State compensation"] : []), ...(gs ? ["EFC / GDP"] : [])];
       H.proj.body.replaceChildren(simpleTable(heads, path.map((r, i) => [String(r["Calendar Year"]) + (i === 0 ? " base" : ""), money(r.EBIT), money(r.Equity), money(r["Total Liabilities"]), fmt(r.Z_EM, 2), fmt(base[i].Z_EM, 2), el("td", {}, zoneChip(r.Zone)), r.Rating, pctAuto(r.PD), money(r.EFC), ...(hasSub ? [money(r["Direct Fuel Subsidy"])] : []), ...(gs ? [pctS(r.EFC_GDP)] : [])]), { right: (i) => i >= 1 && i !== 6 && i !== 7, cls: "compact" }),
-        el("div", { style: "margin-top:10px" }, dataButtons(() => toCSV(["Calendar Year", "EBIT", "Interest Expense", "Retained Earnings", "Equity", "Total Liabilities", "Total Assets", "Current Assets", "X1", "X2", "X3", "X4", "Z_EM", "Z_EM_no_shock", "Zone", "Rating", "PD", "EAD", "EFC", "Direct Fuel Subsidy", "GDP", "EFC_GDP"],
-          path.map((r, i) => [r["Calendar Year"], r.EBIT, r["Interest Expense"], r["Retained Earnings"], r.Equity, r["Total Liabilities"], r["Total Assets"], r["Current Assets"], r.X1, r.X2, r.X3, r.X4, r.Z_EM, base[i].Z_EM, r.Zone, r.Rating, r.PD, r.EAD, r.EFC, r["Direct Fuel Subsidy"], r.GDP, r.EFC_GDP])), `scenario_${st.soe}.csv`)));
+        el("div", { style: "margin-top:10px" }, dataButtons(() => toCSV(["Calendar Year", "EBIT", "Interest Expense", "Retained Earnings", "Equity", "Total Liabilities", "Total Assets", "Current Assets", "X1", "X2", "X3", "X4", "Z_EM", "Z_EM_no_shock", "Zone", "Rating", "PD", "EAD", "EFC", "Direct Fuel Subsidy", "GDP", "EFC_GDP", "Current Liabilities", "Net Income", "Fuel Cost Change", "Tariff Increase Revenue", "State Compensation Paid", "State Compensation Receivable", "Compensation Provision", "Trapped VAT Credits", "Cash Funding Gap", "New Short-term Debt", "Supplier Arrears", "New Long-term Debt", "Interest on New Debt", "Current Ratio", "Adjusted Current Ratio", "Debt to Assets"],
+          path.map((r, i) => [r["Calendar Year"], r.EBIT, r["Interest Expense"], r["Retained Earnings"], r.Equity, r["Total Liabilities"], r["Total Assets"], r["Current Assets"], r.X1, r.X2, r.X3, r.X4, r.Z_EM, base[i].Z_EM, r.Zone, r.Rating, r.PD, r.EAD, r.EFC, r["Direct Fuel Subsidy"], r.GDP, r.EFC_GDP, r["Current Liabilities"], r["Net Income"], r["Fuel Cost Change"], r["Tariff Increase Revenue"], r["State Compensation Paid"], r["State Compensation Receivable"], r["Compensation Provision"], r["Trapped VAT Credits"], r["Cash Funding Gap"], r["New Short-term Debt"], r["Supplier Arrears"], r["New Long-term Debt"], r["Interest on New Debt"], r["Current Ratio"], r["Adjusted Current Ratio"], r["Debt to Assets"]])), `scenario_${st.soe}.csv`)));
     },
     renderMC(b, p, gs) {
       const st = S.sh, m = st.mc, H = this.H;
@@ -1530,7 +1616,7 @@
     renderAll(gs) {
       const st = S.sh, H = this.H;
       const own = st.allExpo === "own";
-      const expoFn = own ? (r) => Object.assign(expoFor(r), { fuel_subsidy_share: st.expo.fuel_subsidy_share }) : () => st.expo;
+      const expoFn = own ? (r) => Object.assign(expoFor(r), { fuel_subsidy_share: st.expo.fuel_subsidy_share }, Object.fromEntries(POLICY_KEYS.map((k) => [k, st.expo[k]]))) : () => st.expo;
       const res = stressAll(S.en, st.mags, expoFn, st.D, st.H, st.lgd, S.gdp, S.growth, st.ead).map((x) => Object.assign(x, { de: (last(x.str).EFC || 0) - (last(x.base).EFC || 0), sub: sum(x.str.map((r) => r["Direct Fuel Subsidy"])) })).sort((a, b2) => b2.de - a.de);
       const hasSub = res.some((x) => x.sub);
       {
@@ -1541,11 +1627,11 @@
           tile("Portfolio EFC, stressed", ok(up) && up > 0 ? "watch" : "ok", ok(up) && up > 0 ? "Rises" : "Flat", money(tS0), CUR, `no shock ${money(tB0)} · ${sgn(up, 0)}%`),
           topR ? tile("Largest rise in EFC", null, null, (topR.de >= 0 ? "+" : "") + money(topR.de), CUR, `${topR.row.Entity} · ${topR.row.Sector}`) : null,
           countTile("In distress at the horizon", dist, n, `Z″ ≤ ${CFG.Z_DISTRESS_CUTOFF} under these shocks`),
-          hasSub ? tile("Direct fuel subsidy", "watch", "Outlay", money(sum(res.map((x) => x.sub))), CUR, "all SOEs, over the shock years") : null);
+          hasSub ? tile("State compensation", "watch", "Recognised", money(sum(res.map((x) => x.sub))), CUR, "all SOEs, over the shock years") : null);
       }
       const lastY = res.length ? last(res[0].base)["Calendar Year"] : "";
       const t = el("table");
-      const heads = ["SOE", "Z″ base", "Z″ no shock", "Z″ stressed", "Zone drop", "EFC no shock", "EFC stressed", "Δ EFC", ...(hasSub ? ["Fuel subsidy"] : []), ...(gs ? ["Δ / GDP"] : [])];
+      const heads = ["SOE", "Z″ base", "Z″ no shock", "Z″ stressed", "Zone drop", "EFC no shock", "EFC stressed", "Δ EFC", ...(hasSub ? ["State compensation"] : []), ...(gs ? ["Δ / GDP"] : [])];
       t.className = "compact";
       t.appendChild(el("thead", {}, el("tr", {}, heads.map((h, i) => el("th", { class: i ? "r" : "" }, h)))));
       const tb = el("tbody");
@@ -1995,6 +2081,11 @@
       btnBox.replaceChildren(dataButtons(() => toCSV(["group", "parameter", "value", "status", "source", "used_in"], rows.map((r) => [r.group, r.parameter, r.value, labels[r.status], r.source, r.used_in])), "parameter_register.csv"));
     },
   };
+
+  /* =====================================================================
+     optional upload-only fiscal-support additions
+     ===================================================================== */
+  /*__SUPPORT_EXTENSION_JS__*/
 
   /* =====================================================================
      boot

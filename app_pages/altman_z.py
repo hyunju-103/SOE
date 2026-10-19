@@ -186,7 +186,7 @@ with bc1:
     fig2.update_layout(legend=dict(orientation="h", y=-0.28, x=0, font=dict(size=round(10 * 1.2, 1))))
     fig2.update_xaxes(showgrid=True, gridcolor=THEME["border"], zeroline=False, title="Z-EM score")
     fig2.update_yaxes(showgrid=False, showline=False, automargin=True, tickfont=dict(size=round(10 * 1.2, 1)))
-    st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig2, use_container_width=True, config=MINIMAL_MODEBAR_CONFIG)
     download_row(period_df.to_csv(index=False), "altman_z_benchmark.csv", fig2, "altman_z_benchmark.png", key_prefix="bench")
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -200,7 +200,7 @@ with bc2:
     ))
     fig3.update_layout(**{**CHART_LAYOUT, "height": 320, "showlegend": True, "margin": dict(l=10, r=10, t=10, b=30)})
     fig3.update_layout(legend=dict(orientation="h", y=-0.12, x=0, font=dict(size=round(10 * 1.2, 1))))
-    st.plotly_chart(fig3, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig3, use_container_width=True, config=MINIMAL_MODEBAR_CONFIG)
     download_row(counts.rename("Count").to_csv(), "zone_distribution.csv", fig3, "zone_distribution.png", key_prefix="zone_dist")
     st.markdown("</div>", unsafe_allow_html=True)
 

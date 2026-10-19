@@ -84,7 +84,7 @@ def config_payload() -> dict:
         "LINK_LEVELS", "LINK_SCORE", "LINK_CRITERIA", "LIKELIHOOD_TIERS_ASC", "LIKELIHOOD_UPLIFT",
         "DYNAMIC_CAP_TRIGGER_NOTCHES", "DYNAMIC_CAP_TIER", "TRIGGER_RULES", "REPORT_HEADLINE_KPIS",
         "REPORT_STRESS_CHANNELS", "REPORT_EFC_GDP_WATCH", "REPORT_EFC_GDP_ALERT",
-        "DEFAULT_EXPOSURES", "EAD_SHARE_DEFAULT", "EAD_SHARE_PRESETS", "MC_DEFAULT_RATE_STD_BPS",
+        "DEFAULT_EXPOSURES", "DEFAULT_CASH_SETTINGS", "OIL_SHOCK_PRESET", "EAD_SHARE_DEFAULT", "EAD_SHARE_PRESETS", "MC_DEFAULT_RATE_STD_BPS",
         "MC_DEFAULT_REVENUE_STD_SD", "MC_DEFAULT_CORRELATIONS", "PARAMETER_REGISTER", "PARAMETER_STATUS_LABELS",
         "LINE_SMOOTH_TENSION",
     ]
@@ -112,7 +112,7 @@ def rows_payload(raw_df: pd.DataFrame) -> list:
     df["Year"] = df["Year"].astype(int)
     if "Sector" not in df.columns:
         df["Sector"] = "Other"
-    df["Sector"] = df["Sector"].fillna("Other")
+    df["Sector"] = df["Sector"].fillna("Other").replace({"Utility": "Power / Utilities", "Utilities": "Power / Utilities", "Electricity Utility": "Power / Utilities"})
     keep = [c for c in dict.fromkeys(ROW_TEXT_COLUMNS + data_loader.NUMERIC_COLUMNS + data_loader.OPTIONAL_NUMERIC_COLUMNS) if c in df.columns]
     recs = []
     for _, r in df[keep].iterrows():
@@ -183,6 +183,9 @@ def render_html(app: dict, standalone: bool = True) -> str:
     css = (TEMPLATE_DIR / "app.css").read_text(encoding="utf-8")
     engine = (TEMPLATE_DIR / "engine.js").read_text(encoding="utf-8")
     app_js = (TEMPLATE_DIR / "app.js").read_text(encoding="utf-8")
+    extension_js = (TEMPLATE_DIR / "support_additions.js").read_text(encoding="utf-8")
+    chart_export_js = (TEMPLATE_DIR / "chart_export.js").read_text(encoding="utf-8")
+    app_js = app_js.replace("/*__SUPPORT_EXTENSION_JS__*/", extension_js)
     title = html_lib.escape(app["data"]["meta"]["title"])
     body = (
         tpl.replace("__APP_TITLE__", title)
@@ -192,6 +195,7 @@ def render_html(app: dict, standalone: bool = True) -> str:
         .replace("/*__ENGINE_JS__*/", engine.replace("</script", "<\\/script"))
         .replace("/*__APP_JS__*/", app_js.replace("</script", "<\\/script"))
     )
+    body = body.replace("/*__CHART_EXPORT_JS__*/", chart_export_js.replace("</script", "<\\/script"))
     if not standalone:
         return body
     return (

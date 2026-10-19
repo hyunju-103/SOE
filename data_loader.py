@@ -154,7 +154,10 @@ def load_uploaded_file(uploaded_file) -> pd.DataFrame:
 def load_and_standardize(uploaded_file):
     """Read an upload and map its column names onto the standard schema
     (schema.standardize_columns). Returns (df, mapping_report)."""
-    return schema.standardize_columns(load_uploaded_file(uploaded_file))
+    df, mapping = schema.standardize_columns(load_uploaded_file(uploaded_file))
+    if "Sector" in df.columns:
+        df["Sector"] = df["Sector"].replace({"Utility": "Power / Utilities", "Utilities": "Power / Utilities", "Electricity Utility": "Power / Utilities"})
+    return df, mapping
 
 
 def data_quality_summary(df: pd.DataFrame) -> pd.DataFrame:

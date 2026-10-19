@@ -29,7 +29,8 @@ if st.session_state.get("soe_df") is None:
 with st.expander("What do these shocks mean?"):
     rows = "".join(
         f"<tr><td style='font-weight:700;white-space:nowrap;'>{term}</td><td>{config.GLOSSARY[term]}</td></tr>"
-        for term in ["Fuel shock", "Tariff pass-through", "FX shock", "Interest rate shock",
+        for term in ["Fuel shock", "Tariff pass-through", "Tariff increase", "State compensation", "State compensation receivable",
+                     "Cash funding gap", "Adjusted current ratio", "FX shock", "Interest rate shock",
                      "Revenue shock", "Refinancing shock", "Government arrears", "Monte Carlo simulation", "Fiscal-at-risk"]
     )
     st.markdown(f"<table class='sfp-table sfp-table-wrap'><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
@@ -84,25 +85,86 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-t1, t2, t3, t4 = st.tabs(["Fuel", "FX", "Interest rate, revenue & refinancing", "Arrears & horizon"])
+_preset = config.OIL_SHOCK_PRESET
+oil_preset = st.toggle(
+    f"Start from the oil-shock preset (fuel {_preset['fuel_shock_pct']:+.0%}, fuel {_preset['fuel_cost_share']:.0%} of OpEx, tariffs frozen, "
+    f"State pays {_preset['comp_paid_share']:.0%} of its compensation in-year, cash gap funded short-term)",
+    value=False,
+    help="Sets the sliders below to the SENELEC review assumptions (config.OIL_SHOCK_PRESET). You can still move any slider afterwards. "
+         "Switch it off to go back to this SOE's own starting values.",
+)
+
+
+def _start(name):
+    """Starting value of an exposure or cash slider: the oil preset when it is on, else this SOE's value."""
+    return float(_preset[name]) if oil_preset and name in _preset else float(expo[name][0])
+
+
+def _src_or_preset(name):
+    return "Starts at the oil-shock preset" if oil_preset and name in _preset else _src(name)
+
+
+t1, t5, t2, t3, t4 = st.tabs(["Fuel", "Cash & financing", "FX", "Interest rate, revenue & refinancing", "Arrears & horizon"])
 
 with t1:
     c1, c2 = st.columns(2)
     with c1:
-        fuel_cost_share = st.slider("Fuel cost share of OpEx", 0.0, 0.60, float(min(0.60, default_fuel_share)), 0.01,
-                                     help="What share of this SOE's operating costs is spent on fuel. Higher share = more exposed to a fuel price shock.")
-        st.caption(_src("fuel_cost_share"))
-        fuel_shock_pct = st.slider("Fuel price shock (%)", -50, 100, 0, 1,
+        fuel_cost_share = st.slider("Fuel cost share of OpEx", 0.0, 1.0, _start("fuel_cost_share"), 0.01,
+                                     help="What share of this SOE's operating costs is spent on fuel (for a utility, include fuel-indexed "
+                                          "IPP purchases). Higher share = more exposed to a fuel price shock.")
+        st.caption(_src_or_preset("fuel_cost_share"))
+        fuel_shock_pct = st.slider("Fuel price shock (%)", -50, 100, int(round(_preset["fuel_shock_pct"] * 100)) if oil_preset else 0, 1,
                                     help=config.GLOSSARY["Fuel shock"] + " Negative means fuel gets cheaper. 0 = no shock.") / 100.0
+        tariff_increase_pct = st.slider("End-user tariff increase (%) — policy", 0, 30, 0, 1,
+                                         help=config.GLOSSARY["Tariff increase"] + " Revenue rises by this share during the shock years; "
+                                              "the rest of the fuel-cost change is then split by the two sliders on the right.") / 100.0
     with c2:
-        tariff_passthrough = st.slider("Tariff pass-through rate", 0.0, 1.0, float(expo["tariff_passthrough"][0]), 0.05,
+        tariff_passthrough = st.slider("Tariff pass-through rate", 0.0, 1.0, _start("tariff_passthrough"), 0.05,
                                         help=config.GLOSSARY["Tariff pass-through"] + " Case B: the cost increase reaches customers through tariffs.")
-        st.caption(_src("tariff_passthrough"))
-        fuel_subsidy_share = st.slider("Government subsidy share of the fuel-cost change", 0.0, 1.0, 0.0, 0.05,
-                                        help="Case C: the share of the fuel-cost increase the government absorbs through a subsidy. "
-                                             "It does not hit the SOE's EBIT, but it is a direct budget outlay, reported next to EFC. 0 = off.")
+        st.caption(_src_or_preset("tariff_passthrough"))
+        fuel_subsidy_share = st.slider("State compensation share of the fuel-cost change (Case C)", 0.0, 1.0,
+                                        float(_preset["fuel_subsidy_share"]) if oil_preset else 0.0, 0.05,
+                                        help="Case C: the share of the fuel-cost change (after any tariff increase) the government compensates — "
+                                             "for SENELEC, the gap between the regulator's allowed revenue (RMA) and tariff revenue. It does not hit "
+                                             "the SOE's EBIT; how much of it arrives as cash is set on the Cash & financing tab. 0 = off.")
         if tariff_passthrough + fuel_subsidy_share > 1:
-            st.markdown('<div class="sfp-alert warn">Pass-through plus subsidy exceed 100% of the cost increase — the SOE is treated as absorbing none of it.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="sfp-alert warn">Pass-through plus State compensation exceed 100% of the cost increase — the SOE is treated as absorbing none of it.</div>', unsafe_allow_html=True)
+
+with t5:
+    st.markdown(
+        '<p class="sfp-hint">How the fuel shock turns into a cash problem. The State\'s compensation is booked as revenue when it is due, '
+        'but only part of it arrives as cash; the SOE borrows to pay its fuel bills in the meantime. The defaults reproduce the original '
+        'model (all paid in-year, the cash gap funded long-term without interest, current liabilities flat).</p>',
+        unsafe_allow_html=True,
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        comp_paid_share = st.slider("State compensation paid in the same year", 0.0, 1.0, _start("comp_paid_share"), 0.05,
+                                     help="Share of this year's recognised compensation that arrives as cash in the same year; the rest becomes a "
+                                          "receivable on the State. A payment delay of about 300 days is roughly 18% (1 − 300/365).")
+        st.caption(_src_or_preset("comp_paid_share"))
+        comp_backlog_collected = st.slider("Unpaid compensation collected the next year", 0.0, 1.0, _start("comp_backlog_collected"), 0.05,
+                                            help="Share of the receivable at the start of a year that the Treasury pays during that year. 100% = every claim is settled within a year.")
+        st.caption(_src_or_preset("comp_backlog_collected"))
+        comp_provision_share = st.slider("Unpaid compensation treated as a loss", 0.0, 1.0, _start("comp_provision_share"), 0.05,
+                                          help="0% = keep the unpaid amount as a receivable (net income looks stable, cash does not). "
+                                               "100% = write it off as a loss — the simpler proxy discussed in the review.")
+        st.caption(_src_or_preset("comp_provision_share"))
+        vat_trapped_share = st.slider("Input VAT on the extra fuel bill not recovered", 0.0, 1.0, _start("vat_trapped_share"), 0.05,
+                                       help=f"Share of the input VAT (rate {config.DEFAULT_CASH_SETTINGS['vat_rate']:.0%}, set in config.py) on the extra fuel bill "
+                                            "that cannot be offset or refunded, e.g. because many sales are VAT-exempt. A cash outflow and an illiquid current asset.")
+        st.caption(_src_or_preset("vat_trapped_share"))
+    with c2:
+        cash_gap_short_term_share = st.slider("Cash gap funded short-term", 0.0, 1.0, _start("cash_gap_short_term_share"), 0.05,
+                                               help="Share of the cash shortfall funded by overdrafts, short-term loans or unpaid supplier bills — all current "
+                                                    "liabilities. The rest becomes long-term debt. 0% = original model (current liabilities held flat).")
+        st.caption(_src_or_preset("cash_gap_short_term_share"))
+        cash_gap_payables_share = st.slider("… of which unpaid supplier bills", 0.0, 1.0, _start("cash_gap_payables_share"), 0.05,
+                                             help="Part of the short-term funding that comes from paying fuel suppliers and IPPs late instead of borrowing from banks. Carries no interest here.")
+        st.caption(_src_or_preset("cash_gap_payables_share"))
+        new_debt_interest_rate = st.slider("Interest rate on new borrowing (%)", 0.0, 20.0, _start("new_debt_interest_rate") * 100, 0.5,
+                                            help="Annual rate on the new bank and long-term debt that funds the cash gap; this year's new draw pays half a year. 0% = original model.") / 100.0
+        st.caption(_src_or_preset("new_debt_interest_rate"))
 
 with t2:
     c1, c2 = st.columns(2)
@@ -163,6 +225,12 @@ params = {
     "arrears_pct_of_revenue": arrears_pct_of_revenue, "shock_duration_years": shock_duration_years,
     "fuel_subsidy_share": fuel_subsidy_share, "revenue_shock_std_devs": revenue_shock_std_devs,
     "revenue_sigma": sigma_revenue,
+    # tariff policy and cash channel
+    "tariff_increase_pct": tariff_increase_pct, "legacy_loss_assets": config.DEFAULT_SHOCK_PARAMS["legacy_loss_assets"],
+    "comp_paid_share": comp_paid_share, "comp_backlog_collected": comp_backlog_collected, "comp_provision_share": comp_provision_share,
+    "cash_gap_short_term_share": cash_gap_short_term_share, "cash_gap_payables_share": cash_gap_payables_share,
+    "new_debt_interest_rate": new_debt_interest_rate, "vat_rate": config.DEFAULT_CASH_SETTINGS["vat_rate"],
+    "vat_trapped_share": vat_trapped_share,
 }
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -223,16 +291,87 @@ if view_mode == "Single scenario":
                    status="watch" if migrated else "ok", status_text="▲ Yes" if migrated else "● No"),
         theme.tile("Final-year EFC / GDP", ov.pct_small(efc_gdp_final) if base_gdp else "—", "",
                    f"GDP projected at {gdp_growth:.1%}/yr" if base_gdp else "Enter GDP above to populate"),
-        theme.tile("Direct fuel subsidy", ov.money(total_subsidy, _scale), _cur, f"government share {fuel_subsidy_share:.0%} of the fuel-cost change",
-                   status="watch" if total_subsidy > 0 else "ok", status_text="▲ Outlay" if total_subsidy > 0 else "● Saving") if fuel_subsidy_share else None,
+        theme.tile("State compensation", ov.money(total_subsidy, _scale), _cur,
+                   f"government share {fuel_subsidy_share:.0%} · {comp_paid_share:.0%} paid in-year",
+                   status="watch" if total_subsidy > 0 else "ok", status_text="▲ Recognised" if total_subsidy > 0 else "● Saving") if fuel_subsidy_share else None,
     ], container=strip_box)
     if total_subsidy:
         st.markdown(
-            f'<div class="sfp-alert info">Direct fuel subsidy (Case C) over the horizon: <b>{total_subsidy:,.0f}</b> — a budget outlay '
-            f'on top of the expected fiscal cost, because the government absorbs {fuel_subsidy_share:.0%} of the fuel-cost change.</div>',
+            f'<div class="sfp-alert info">State fuel compensation (Case C) over the horizon: <b>{ov.money(total_subsidy, _scale)} {_cur}</b> — a fiscal cost '
+            f'on top of the expected fiscal cost, because the government compensates {fuel_subsidy_share:.0%} of the fuel-cost change. '
+            f'{comp_paid_share:.0%} of each year\'s amount is paid in the same year; the rest is owed to the SOE.</div>',
             unsafe_allow_html=True,
         )
     st.markdown("<br>", unsafe_allow_html=True)
+
+    # --- Liquidity & State compensation: who pays, what arrives as cash, how the gap is funded ---------
+    yrs = scenario.iloc[1:]
+    fuel_up = yrs["Fuel Cost Change"].sum()
+    comp_recognised = yrs["Direct Fuel Subsidy"].sum()
+    funding_gap = yrs["Cash Funding Gap"].sum()
+    if fuel_up != 0 or comp_recognised != 0 or cash_gap_short_term_share > 0:  # the fuel / cash channel is in play
+        tariff_rev, pass_through = yrs["Tariff Increase Revenue"].sum(), yrs["Tariff Pass-through"].sum()
+        paid_total, provision_total = yrs["State Compensation Paid"].sum(), yrs["Compensation Provision"].sum()
+        unpaid_end = final["State Compensation Receivable"]
+        peak = scenario.loc[scenario["State Compensation Receivable"].idxmax()]
+        soe_absorbs = max(0.0, fuel_up - tariff_rev - pass_through - comp_recognised)
+        st.markdown(f'<div class="sfp-card"><div class="sfp-title">Liquidity & State compensation '
+                    f'{theme.info_icon(config.GLOSSARY["State compensation receivable"])}</div>', unsafe_allow_html=True)
+        theme.stat_strip([
+            theme.tile("State compensation recognised", ov.money(comp_recognised, _scale), _cur, "booked as SOE revenue over the projection",
+                       status="watch" if comp_recognised > 0 else None, status_text="▲ Obligation" if comp_recognised > 0 else None),
+            theme.tile("Paid in cash by the budget", ov.money(paid_total, _scale), _cur, f"{comp_paid_share:.0%} in the year it is due, the rest later"),
+            theme.tile("Peak unpaid State compensation", ov.money(peak["State Compensation Receivable"], _scale), _cur,
+                       f"{int(peak['Calendar Year'])} · {ov.money(unpaid_end, _scale)} still unpaid in {_yr}"
+                       + (f" · {ov.money(provision_total, _scale)} written off" if provision_total else ""),
+                       status="alert" if peak["State Compensation Receivable"] > 0 else "ok",
+                       status_text="■ Arrears" if peak["State Compensation Receivable"] > 0 else "● None"),
+            theme.tile("Cash funding gap", ov.money(funding_gap, _scale), _cur,
+                       f"new short-term debt {ov.money(final['New Short-term Debt'], _scale)} · supplier arrears {ov.money(final['Supplier Arrears'], _scale)} · "
+                       f"interest {ov.money(yrs['Interest on New Debt'].sum(), _scale)}",
+                       status="watch" if funding_gap > 0 else "ok", status_text="▲ Borrowed" if funding_gap > 0 else "● None"),
+            theme.tile("Current ratio", f"{final['Current Ratio']:.2f}", "",
+                       f"from {base['Current Ratio']:.2f} · adjusted for illiquid State and VAT claims: {final['Adjusted Current Ratio']:.2f}",
+                       status="watch" if final["Current Ratio"] < base["Current Ratio"] else None),
+            theme.tile("Debt to assets", f"{final['Debt to Assets']:.2f}", "", f"no shock {_fb['Debt to Assets']:.2f}",
+                       status="watch" if final["Debt to Assets"] > _fb["Debt to Assets"] else None),
+        ])
+        cc1, cc2 = st.columns([5, 7])
+        with cc1:
+            split = [("Customers — tariff increase", tariff_rev), ("Customers — pass-through", pass_through),
+                     ("State — paid in cash", paid_total), ("State — not paid by the end", unpaid_end + provision_total), ("SOE — absorbs", soe_absorbs)]
+            split = [(k, v) for k, v in split if abs(v) > 0]
+            if split:
+                fig_split = go.Figure(go.Bar(
+                    x=[v for _, v in split][::-1], y=[k for k, _ in split][::-1], orientation="h",
+                    marker=dict(color=[config.THEME["red"] if ("not paid" in k or "SOE" in k) else config.THEME["chart_navy"] for k, _ in split][::-1],
+                                cornerradius=config.BAR_CORNER_RADIUS),
+                    hovertemplate="%{y}: %{x:,.0f}<extra></extra>",
+                ))
+                fig_split.update_layout(**{**config.CHART_LAYOUT, "height": 60 + 46 * len(split),
+                                           "title": dict(text=f"Who pays the fuel-cost change ({ov.money(fuel_up, _scale)} {_cur})", x=0, xanchor="left",
+                                                         font=dict(size=round(10 * config.FONT_SCALE, 1), color=config.THEME["muted"]))})
+                fig_split.update_xaxes(showgrid=True, gridcolor=config.THEME["border"])
+                st.plotly_chart(fig_split, use_container_width=True, config=MINIMAL_MODEBAR_CONFIG)
+            else:
+                st.markdown('<p class="sfp-hint">No fuel-cost change in this scenario.</p>', unsafe_allow_html=True)
+        with cc2:
+            st.markdown(
+                '<p class="sfp-hint">Net income stays close to the no-shock path because recognised compensation counts as revenue, but only '
+                'the in-year paid share arrives as cash; the receivable is funded by borrowing. When the current ratio starts below 1, adding '
+                'the receivable to current assets and the new debt to current liabilities can even lift the reported ratio. The adjusted ratio '
+                'leaves out the State receivable and trapped VAT, and shows the liquidity squeeze.</p>',
+                unsafe_allow_html=True,
+            )
+        cash_cols = {"Calendar Year": "Year", "Fuel Cost Change": "Fuel cost Δ", "Tariff Increase Revenue": "Tariff ↑",
+                     "Direct Fuel Subsidy": "State recognised", "State Compensation Paid": "State paid", "State Compensation Receivable": "Receivable",
+                     "Cash Funding Gap": "Cash gap", "New Short-term Debt": "New ST debt", "Interest on New Debt": "New interest",
+                     "Net Income": "Net income", "Current Ratio": "Current ratio", "Adjusted Current Ratio": "Adjusted", "Debt to Assets": "Debt / assets"}
+        cash_df = scenario[list(cash_cols)].rename(columns=cash_cols)
+        money_cols = [c for c in cash_df.columns if c not in ("Year", "Current ratio", "Adjusted", "Debt / assets")]
+        st.dataframe(cash_df.style.format({**{c: "{:,.0f}" for c in money_cols}, "Current ratio": "{:.2f}", "Adjusted": "{:.2f}", "Debt / assets": "{:.2f}"}),
+                     use_container_width=True, hide_index=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     shock_summary = shocks.describe_active_shocks(params)
 
@@ -310,9 +449,14 @@ if view_mode == "Single scenario":
     st.markdown(
         """
         <div class="sfp-footnote">
-        <p><b>Simplifications.</b> Tax Expense and Current Liabilities held flat across the horizon;
-        Net Income carries the reported figure plus the shock's effect on EBIT and interest; losses assumed debt-financed. See
+        <p><b>Simplifications.</b> Tax Expense held flat across the horizon; Net Income carries the reported figure plus the
+        shock's effect on EBIT and interest; any cash shortfall (losses, unpaid State compensation, trapped VAT) is borrowed —
+        in current liabilities for the short-term share on the Cash &amp; financing tab, otherwise as long-term debt. See
         shocks.py for full documentation.</p>
+        <p><b>Fuel cost split.</b> A tariff increase (policy Option B) is applied first. What is left of the fuel-cost change is
+        shared between customers (pass-through, Case B), the government (compensation share, Case C) and the SOE (the rest,
+        Case A). Government compensation is recognised as revenue when due but arrives as cash only at the in-year paid share;
+        the rest is a receivable on the State.</p>
         </div>
         """,
         unsafe_allow_html=True,

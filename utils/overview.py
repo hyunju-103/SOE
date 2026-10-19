@@ -22,7 +22,7 @@ ZONE_STATUS = {"Distress": "alert", "Grey": "watch", "Safe": "ok"}
 ZONE_TEXT = {"Distress": "■ Distress", "Grey": "▲ Grey zone", "Safe": "● Safe"}
 RAG_STATUS = {"Red": "alert", "Amber": "watch", "Green": "ok"}
 MAGNITUDES = ["fuel_shock_pct", "fx_shock_pct", "rate_shock_bps", "revenue_shock_std_devs",
-              "refinancing_spread_bps", "arrears_pct_of_revenue"]
+              "refinancing_spread_bps", "arrears_pct_of_revenue", "tariff_increase_pct"]
 # ratios the calculation layer sets to NaN when the denominator is not positive; read as an alert
 SUPPRESSED = {"roe": "Equity", "debt_to_equity": "Equity", "debt_to_ebitda": "EBITDA",
               "depreciation_to_ebitda": "EBITDA", "effective_tax_rate": "Operating Profits (EBIT)"}

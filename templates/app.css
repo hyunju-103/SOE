@@ -256,6 +256,28 @@ table.ctl-table select { font-size: 12.5px; padding: 3px 6px; max-width: 150px; 
 /* charts */
 .chart { width: 100%; position: relative; }
 .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+/* Download controls appear on hover or keyboard focus; they are not drawn in exported images. */
+.chart > .chart-save-png {
+  position: absolute; z-index: 6; top: 6px; right: 6px;
+  width: 32px; height: 32px; padding: 5px; box-sizing: border-box;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--heading); background: rgba(255,255,255,.96);
+  border: 1px solid var(--ring); border-radius: 5px;
+  box-shadow: 0 1px 5px rgba(0, 25, 47, .15);
+  cursor: pointer; opacity: 0; pointer-events: none;
+  transition: opacity .14s ease;
+}
+.chart:hover > .chart-save-png,
+.chart:focus-within > .chart-save-png,
+.chart > .chart-save-png:focus-visible {
+  opacity: 1; pointer-events: auto;
+}
+.chart > .chart-save-png:hover { background: var(--accent-wash); }
+.chart > .chart-save-png:disabled { cursor: wait; opacity: .6; }
+.chart > .chart-save-png:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (hover: none) { .chart > .chart-save-png { opacity: 1; pointer-events: auto; } }
+@media print { .chart > .chart-save-png { display: none !important; } }
+
 .t-ink { fill: var(--ink); } .t-ink2 { fill: var(--ink-2); } .t-muted { fill: var(--muted); } .t-head { fill: var(--heading); }
 .grid-l { stroke: var(--line); stroke-width: 1; }
 .axis-l { stroke: var(--axis); stroke-width: 1; }

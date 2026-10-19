@@ -16,14 +16,14 @@ def wrap_label(s, width=12):
 
 
 MINIMAL_MODEBAR_CONFIG = {
-    "displayModeBar": True,
+    "displayModeBar": "hover",
     "displaylogo": False,
     "modeBarButtonsToRemove": [
         "zoom2d", "pan2d", "select2d", "lasso2d", "zoomIn2d", "zoomOut2d",
         "autoScale2d", "resetScale2d", "hoverClosestCartesian", "hoverCompareCartesian",
         "toggleSpikelines",
     ],
-    "toImageButtonOptions": {"format": "png", "scale": 2},
+    "toImageButtonOptions": {"format": "png", "scale": 2, "filename": "SOE_chart"},
 }
 
 

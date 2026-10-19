@@ -49,11 +49,10 @@ all_available = calculations.available_kpis(df)
 
 if not all_available:
     st.markdown(
-        '<div class="sfp-alert warn">None of the KPI input fields were found in your upload. '
-        "Check the required columns on the Home page.</div>",
+        '<div class="sfp-alert warn">No KPI source values were found in the current dataset. '
+        'The complete KPI catalog remains selectable; missing values are shown as n/a.</div>',
         unsafe_allow_html=True,
     )
-    st.stop()
 
 
 # ------------------------------------------------------------------ #
@@ -61,13 +60,14 @@ if not all_available:
 # ------------------------------------------------------------------ #
 _latest = latest_per_entity(df)
 _n = len(_latest)
-_many = sum(1 for _, r in _latest.iterrows()
-            if sum(ov.kpi_status(r, k) == "alert" for k in all_available) >= -(-len(all_available) // 2))
+_many = (sum(1 for _, r in _latest.iterrows()
+             if sum(ov.kpi_status(r, k) == "alert" for k in all_available) >= -(-len(all_available) // 2))
+         if all_available else None)
 
 
 def _median_tile(key, label):
     if key not in all_available:
-        return None
+        return theme.tile(label, "n/a", "", "Data unavailable")
     vals = _latest[key].dropna()
     if vals.empty:
         return theme.tile(label, "n/a", "", "no SOE has this ratio")
@@ -81,11 +81,11 @@ _grants = None
 if "grants_to_revenue" in all_available:
     _grants = int((_latest["grants_to_revenue"] > KPI_THRESHOLDS["grants_to_revenue"]["red_cut"]).sum())
 theme.stat_strip([
-    theme.count_tile("SOEs with most KPIs in alert", _many, _n, f"half or more of the {len(all_available)} ratios in alert · latest year"),
+    theme.tile("SOEs with most KPIs in alert", "n/a", "", "No calculable KPIs") if _many is None else theme.count_tile("SOEs with most KPIs in alert", _many, _n, f"half or more of the {len(all_available)} ratios in alert · latest year"),
     _median_tile("operating_margin", "Median operating margin"),
     _median_tile("current_ratio", "Median current ratio"),
     _median_tile("debt_to_ebitda", "Median debt / EBITDA"),
-    None if _grants is None else theme.count_tile("Grant-dependent SOEs", _grants, _n,
+    theme.tile("Grant-dependent SOEs", "n/a", "", "Data unavailable") if _grants is None else theme.count_tile("Grant-dependent SOEs", _grants, _n,
                                                   f"grants above {KPI_THRESHOLDS['grants_to_revenue']['red_cut'] * 100:.0f}% of revenue", bad="watch"),
 ])
 
@@ -119,19 +119,22 @@ d_has_years = d["Year"].nunique() > 1
 
 trend_cols = st.columns(len(CATEGORY_ORDER))
 for i, cat in enumerate(CATEGORY_ORDER):
-    cat_kpis = [k for k in KPI_CATEGORIES[cat] if k in all_available]
+    # Preserve every KPI selector option even when the required inputs are absent.
+    cat_kpis = list(KPI_CATEGORIES[cat])
     with trend_cols[i]:
         st.markdown(f'<div class="sfp-card-compact"><div class="sfp-compact-title">{CATEGORY_LABELS[cat]}</div>', unsafe_allow_html=True)
         if not cat_kpis:
             st.markdown('<p class="sfp-kpi-desc">No ratios available in this category for the current data.</p>', unsafe_allow_html=True)
-        elif not d_has_years:
-            st.markdown(f'<p class="sfp-kpi-desc">Only one year of data for {soe_choice} — need at least two to plot a trend.</p>', unsafe_allow_html=True)
         else:
             chosen = st.selectbox("Ratio", cat_kpis, format_func=lambda k: _kpi_title(KPI_THRESHOLDS[k]), key=f"trend_{cat}")
             spec = KPI_THRESHOLDS[chosen]
             dd = d.dropna(subset=[chosen])
             if dd.empty:
-                st.markdown('<p class="sfp-kpi-desc">No data for this ratio.</p>', unsafe_allow_html=True)
+                missing = [c for c in spec["requires"] if c not in df.columns or df[c].isna().all()]
+                message = "Data unavailable" + (" — missing: " + ", ".join(missing) if missing else " for the selected years or denominator.")
+                st.markdown(f'<p class="sfp-kpi-desc">{message}</p>', unsafe_allow_html=True)
+            elif not d_has_years:
+                st.markdown(f'<p class="sfp-kpi-desc">Only one year of data for {soe_choice} — need at least two to plot a trend.</p>', unsafe_allow_html=True)
             else:
                 # every year in the range on the axis (gaps where the ratio is n/a), latest point highlighted,
                 # dashed lines at the alert (red) and good (green) cutoffs — as in the HTML version
@@ -184,7 +187,7 @@ else:
 
 cmp_cols = st.columns(len(CATEGORY_ORDER))
 for i, cat in enumerate(CATEGORY_ORDER):
-    cat_kpis = [k for k in KPI_CATEGORIES[cat] if k in all_available]
+    cat_kpis = list(KPI_CATEGORIES[cat])
     with cmp_cols[i]:
         st.markdown(f'<div class="sfp-card-compact"><div class="sfp-compact-title">{CATEGORY_LABELS[cat]}</div>', unsafe_allow_html=True)
         if not cat_kpis:
@@ -195,7 +198,9 @@ for i, cat in enumerate(CATEGORY_ORDER):
             agg = base.groupby(["Entity", "Sector"], as_index=False)[chosen].mean()
             plot_df = agg.dropna(subset=[chosen]).copy()
             if plot_df.empty:
-                st.markdown('<p class="sfp-kpi-desc">No data for this ratio in the current selection.</p>', unsafe_allow_html=True)
+                missing = [c for c in spec["requires"] if c not in df.columns or df[c].isna().all()]
+                message = "Data unavailable" + (" — missing: " + ", ".join(missing) if missing else " for the current comparison selection.")
+                st.markdown(f'<p class="sfp-kpi-desc">{message}</p>', unsafe_allow_html=True)
             else:
                 plot_df["_flag"] = plot_df[chosen].apply(lambda v: calculations.classify(v, chosen)[0])
                 color_map = {"Red": THEME["red"], "Amber": THEME["amber"], "Green": THEME["chart_navy"], "No data": THEME["muted"]}
@@ -224,7 +229,7 @@ with st.expander("Full SOE scorecard (all ratios, latest year)"):
         "Show categories", CATEGORY_ORDER, default=CATEGORY_ORDER,
         format_func=lambda c: CATEGORY_LABELS[c], key="scorecard_cats",
     )
-    table_kpis = [k for c in sel_cats for k in KPI_CATEGORIES[c] if k in all_available]
+    table_kpis = [k for c in sel_cats for k in KPI_CATEGORIES[c]]
     latest = df.sort_values("Year").groupby("Entity", as_index=False).last() if df["Year"].nunique() > 1 else df
     table_rows = []
     for _, r in latest.iterrows():

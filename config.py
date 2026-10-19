@@ -202,6 +202,12 @@ KPI_THRESHOLDS = {
         "requires": ["Operating Profits (EBIT)", "Revenues"],
         "description": "EBIT as a share of revenue. Negative means operating losses before financing costs.",
     },
+    "cost_recovery": {
+        "label": "Cost recovery", "unit": "x", "direction": "higher_is_better",
+        "red_cut": 1.0, "green_cut": 1.10,
+        "requires": ["Revenues", "Government Grants", "Cost of Goods Sold", "Other Operating Expenses"],
+        "description": "(Total revenue − government grants) / (COGS + other operating expenses). The numerator assumes reported grants are included in total revenue and are removed only once. All four components must be reported; investment grants and equity injections are not deducted. Values below 1x indicate incomplete coverage of these operating costs without grants. Cutoffs (alert <1.0x, good ≥1.1x) are illustrative.",
+    },
     "net_margin": {
         "label": "Net margin", "unit": "%", "direction": "higher_is_better",
         "red_cut": 0.0, "green_cut": 0.05,
@@ -295,7 +301,7 @@ KPI_THRESHOLDS = {
 }
 
 KPI_CATEGORIES = {
-    "profitability": ["operating_margin", "net_margin",  "roa", "roe"], #"ebitda_margin",
+    "profitability": ["operating_margin", "cost_recovery", "net_margin", "roa", "roe"], #"ebitda_margin",
     "liquidity": ["current_ratio", "working_capital_ratio"],
     "solvency": ["debt_to_ebitda", "liabilities_to_assets", "interest_coverage", "debt_to_equity", "asset_turnover", "depreciation_to_ebitda"],
     "fiscal_dependency": ["grants_to_revenue", "grants_to_expense", "effective_tax_rate"],
@@ -337,10 +343,50 @@ DEFAULT_SHOCK_PARAMS = {
     "revenue_shock_std_devs": -1.0, "revenue_elasticity": 1.00,
     "arrears_pct_of_revenue": 0.05, "shock_duration_years": 2,
     "near_term_maturity_share": 0.20, "refinancing_spread_bps": 150,
-    # Case C of the fuel transmission: share of the fuel-cost increase the
-    # government absorbs through a subsidy. It never reaches the SOE's EBIT
-    # but is a direct budget outlay, reported next to EFC. 0 = off.
+    # Case C of the fuel transmission: share of the fuel-cost change (left after
+    # any tariff increase) the government compensates. It never reaches the
+    # SOE's EBIT; it is recognised as compensation owed by the State, and only
+    # the in-year paid share arrives as cash (DEFAULT_CASH_SETTINGS). 0 = off.
     "fuel_subsidy_share": 0.0,
+    # End-user tariff increase applied during the shock years, as a share of
+    # revenue — a policy response, so it is a magnitude (0 in the no-shock
+    # path). 0 = Option A (tariff freeze); 0.10–0.15 = Option B.
+    "tariff_increase_pct": 0.0,
+    # True restores the original rule in which a loss that is borrowed also
+    # reduces total assets (the balance sheet then no longer balances). False
+    # keeps TA = TL + Equity; it only changes years with negative net income.
+    "legacy_loss_assets": False,
+}
+
+# Cash and financing settings for the shock engine (Shock Scenarios → "Cash &
+# financing"). These defaults reproduce the original model: the State pays its
+# compensation in full in the same year, and any cash shortfall is long-term
+# debt with no interest, so current liabilities stay flat.
+DEFAULT_CASH_SETTINGS = {
+    "comp_paid_share": 1.0,             # share of recognised State compensation paid in the same year
+    "comp_backlog_collected": 1.0,      # share of the opening State receivable collected during the year
+    "comp_provision_share": 0.0,        # share of unpaid compensation written off as a loss (0 = keep as receivable)
+    "cash_gap_short_term_share": 0.0,   # share of the cash gap funded in current liabilities (rest long-term)
+    "cash_gap_payables_share": 0.0,     # of the short-term part, share via unpaid supplier bills (no interest)
+    "new_debt_interest_rate": 0.0,      # annual interest rate on the new bank and long-term debt
+    "vat_rate": 0.18,                   # VAT rate applied to the extra fuel bill (Senegal standard rate)
+    "vat_trapped_share": 0.0,           # share of that input VAT that cannot be offset or refunded
+}
+
+# "Oil +60% with delayed State payment" preset on the Shock Scenarios page —
+# the SENELEC review assumptions. The fuel shock itself (+60%) is set by the
+# preset button; these are the exposure and cash settings it applies.
+OIL_SHOCK_PRESET = {
+    "fuel_shock_pct": 0.60,
+    "fuel_cost_share": 0.70,            # fuel + fuel-indexed IPP purchases: 60–80% of OpEx in the review note
+    "tariff_passthrough": 0.0,          # tariffs frozen (Option A)
+    "fuel_subsidy_share": 1.0,          # the State compensates the whole RMA gap
+    "comp_paid_share": 0.30,            # review proxy; a ~300-day Treasury lag is closer to 0.18 (1 - 300/365)
+    "comp_backlog_collected": 1.0,
+    "comp_provision_share": 0.0,
+    "cash_gap_short_term_share": 1.0,   # overdrafts, short-term loans, supplier credit
+    "cash_gap_payables_share": 0.0,
+    "new_debt_interest_rate": 0.08,     # PLACEHOLDER — replace with the SOE's short-term borrowing cost
 }
 
 # Exposure starting values when an SOE's data carry no exposure columns
@@ -390,7 +436,7 @@ REQUIRED_COLUMNS = [
 OPTIONAL_SHOCK_COLUMNS = [
     "Cash and Equivalents", "FX Revenue Share", "FX Cost Share", "FX Debt Share",
     "Floating Rate Debt Share", "Short Term Debt", "Government Arrears Owed",
-    "Fuel Cost Share",
+    "Fuel Cost Share", "VAT Credits",
 ]
 
 # ---------------------------------------------------------------------------
@@ -481,6 +527,11 @@ GLOSSARY = {
     "Government arrears": "Money the government owes the SOE (e.g. for services already delivered) but hasn't yet paid — this can squeeze the SOE's cash even if its accounting profit looks fine.",
     "Monte Carlo simulation": "Instead of one shock scenario, the tool runs thousands of random shock combinations to show a range of possible outcomes, not just one guess.",
     "Fiscal-at-risk": "The 95th-percentile Expected Fiscal Cost across all simulations — a 'bad but plausible' scenario, not the worst case and not the average.",
+    "Tariff increase": "An end-user tariff increase decided as a policy response to the shock, as a percentage of revenue. 0% is a tariff freeze (Option A); 10–15% is a partial adjustment (Option B). It reduces what the State and the SOE have to cover.",
+    "State compensation": "What the State owes the SOE for keeping tariffs below cost — for SENELEC, the gap between the regulator's Maximum Authorized Revenue (RMA) and tariff revenue. It is booked as revenue when due, but only the part actually paid arrives as cash.",
+    "State compensation receivable": "Compensation the State has recognised but not yet paid. It sits in current assets, so profit looks fine, but it is not cash — the SOE has to borrow to pay its fuel bills in the meantime.",
+    "Cash funding gap": "Cash the SOE is short of in a year because of losses, unpaid State compensation or input VAT it cannot recover. It is borrowed — short-term (overdrafts, short-term loans, late payment of suppliers) or long-term — and the new debt carries interest.",
+    "Adjusted current ratio": "Current assets minus State compensation receivables and trapped VAT credits, divided by current liabilities. Shows liquidity once paper claims are left out; the reported current ratio can even rise when a receivable is funded with short-term debt.",
 }
 
 # ---------------------------------------------------------------------------
@@ -712,8 +763,24 @@ PARAMETER_REGISTER = [
        "1.0 = costs fixed in the short run; estimate from the SOE's cost structure", "Revenue shock"),
     _p("Exposures", "Tariff pass-through of fuel costs", f"{DEFAULT_EXPOSURES['tariff_passthrough']:.0%}", "placeholder",
        "Depends on the regulatory regime; set per SOE / sector", "Fuel shock"),
-    _p("Exposures", "Government subsidy share of fuel costs (Case C)", f"{DEFAULT_EXPOSURES['fuel_subsidy_share']:.0%} (off)", "user",
-       "Set by the user; the absorbed amount is reported as a direct fiscal cost", "Fuel shock"),
+    _p("Exposures", "State compensation share of fuel costs (Case C)", f"{DEFAULT_EXPOSURES['fuel_subsidy_share']:.0%} (off)", "user",
+       "Set by the user; the compensated amount is reported as a fiscal cost next to EFC", "Fuel shock"),
+    _p("Fuel policy and cash", "End-user tariff increase", f"{_S['tariff_increase_pct']:.0%} (Option A freeze); 10–15% for Option B", "user",
+       "Policy scenario set by the user", "Fuel shock"),
+    _p("Fuel policy and cash", "State compensation paid in the same year", f"{DEFAULT_CASH_SETTINGS['comp_paid_share']:.0%} (oil preset {OIL_SHOCK_PRESET['comp_paid_share']:.0%})", "placeholder",
+       "Review note on SENELEC: Treasury transfers take about 300 days (≈18% paid in-year); 30% used as a proxy", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Unpaid compensation collected the next year", f"{DEFAULT_CASH_SETTINGS['comp_backlog_collected']:.0%}", "placeholder",
+       "Assumes payment lags under a year; lower it where arrears to the SOE pile up", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Unpaid compensation written off as a loss", f"{DEFAULT_CASH_SETTINGS['comp_provision_share']:.0%}", "user",
+       "0% keeps it as a receivable; 100% is the 'treat unpaid compensation as a loss' proxy", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Cash gap funded short-term / via supplier arrears", f"{DEFAULT_CASH_SETTINGS['cash_gap_short_term_share']:.0%} / {DEFAULT_CASH_SETTINGS['cash_gap_payables_share']:.0%} (oil preset {OIL_SHOCK_PRESET['cash_gap_short_term_share']:.0%} / {OIL_SHOCK_PRESET['cash_gap_payables_share']:.0%})", "design",
+       "0% reproduces the original model (losses funded long-term, current liabilities flat)", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Interest rate on new borrowing", f"{DEFAULT_CASH_SETTINGS['new_debt_interest_rate']:.0%} (oil preset {OIL_SHOCK_PRESET['new_debt_interest_rate']:.0%})", "placeholder",
+       "Replace with the SOE's short-term borrowing cost from its financial statements", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Input VAT on the extra fuel bill", f"rate {DEFAULT_CASH_SETTINGS['vat_rate']:.0%}, unrecovered {DEFAULT_CASH_SETTINGS['vat_trapped_share']:.0%}", "placeholder",
+       "Senegal standard VAT rate; the unrecovered share depends on the SOE's VAT-exempt sales", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Oil-shock preset (fuel shock, fuel cost share)", f"+{OIL_SHOCK_PRESET['fuel_shock_pct']:.0%}, {OIL_SHOCK_PRESET['fuel_cost_share']:.0%} of OpEx", "proxy",
+       "SENELEC review note: fuel and IPP purchases are 60–80% of operating expenses", "Shock Scenarios"),
     _p("Exposures", "Revenue volatility fallback", ", ".join(f"{k} {v:.0%}" for k, v in SECTOR_REVENUE_VOLATILITY.items()), "placeholder",
        "Used only when an SOE has fewer than three years of revenue", "Revenue shock"),
     _p("Monte Carlo", "Fuel / FX standard deviations", f"{MC_DEFAULT_FUEL_STD:.0%} / {MC_DEFAULT_FX_STD:.0%}", "placeholder",

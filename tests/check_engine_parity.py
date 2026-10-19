@@ -32,6 +32,7 @@ from utils.portfolio import latest_per_entity  # noqa: E402
 NODE_RUNNER = r"""
 const fs = require("fs");
 const inp = JSON.parse(fs.readFileSync(0, "utf8"));
+const CASH_KEYS = inp.cash_keys;
 const E = require(inp.engine).create(inp.config);
 const NUM = new Set(inp.config.ALL_NUMERIC_COLUMNS);
 const rows = inp.rows.map(r => { const o = {}; for (const k in r) o[k] = NUM.has(k) ? (r[k] === null ? NaN : r[k]) : r[k]; return o; });
@@ -52,7 +53,7 @@ for (const [name, p] of Object.entries(inp.scenarios)) {
     const v = E.revenueVolatility(en, r.Entity);
     pp.revenue_shock_pct = pp.revenue_shock_std_devs * (Number.isFinite(v) ? v : (inp.config.SECTOR_REVENUE_VOLATILITY[r.Sector] ?? 0.15));
     const path = E.costPath(E.runScenario(r, pp, inp.H), 70, null, pp.ead_share ?? 1);
-    out.paths[name][r.Entity] = { z: path.map(x => x.Z_EM), efc: path.map(x => x.EFC), rating: path.map(x => x.Rating), sub: path.map(x => x["Direct Fuel Subsidy"]), desc: E.describeShocks(pp) };
+    out.paths[name][r.Entity] = { z: path.map(x => x.Z_EM), efc: path.map(x => x.EFC), rating: path.map(x => x.Rating), sub: path.map(x => x["Direct Fuel Subsidy"]), desc: E.describeShocks(pp), cash: path.map(x => CASH_KEYS.map(k => x[k])) };
   }
 }
 out.gre = inp.gre.map(([ent, role, link, sov, outl]) => { const g = E.gre(en, ent, role, link, sov, outl); return [g.capped, g.uplifted, g.notches, g.gap]; });
@@ -85,6 +86,11 @@ process.stdout.write(JSON.stringify(out, (k, v) => (typeof v === "number" && !Nu
 """
 
 
+CASH_KEYS = ["Net Income", "Current Liabilities", "Current Assets", "Total Assets", "State Compensation Receivable",
+             "State Compensation Paid", "Cash Funding Gap", "Interest on New Debt", "New Short-term Debt", "Supplier Arrears",
+             "Trapped VAT Credits", "Current Ratio", "Adjusted Current Ratio", "Debt to Assets"]
+
+
 def close(a, b, tol=1e-6):
     if a is None or b is None or (isinstance(a, float) and math.isnan(a)) or (isinstance(b, float) and math.isnan(b)):
         na = a is None or (isinstance(a, float) and math.isnan(a))
@@ -107,7 +113,16 @@ def main():
                   refinancing_spread_bps=600, arrears_pct_of_revenue=-0.1, shock_duration_years=3, tariff_passthrough=0.2)
     subsidy = dict(custom, fuel_shock_pct=0.4, fuel_subsidy_share=0.3, tariff_passthrough=0.5, ead_share=0.6)
     overfull = dict(custom, fuel_shock_pct=0.3, fuel_subsidy_share=0.8, tariff_passthrough=0.5)
-    scenarios = {"zero": zero, "combined": dict(config.DEFAULT_SHOCK_PARAMS), "custom": custom, "subsidy": subsidy, "overfull": overfull}
+    # cash channel: delayed State compensation, short-term funding, interest, tariff policy, VAT, legacy asset rule
+    oil = dict(config.DEFAULT_SHOCK_PARAMS, **config.DEFAULT_CASH_SETTINGS)
+    oil.update({k: v for k, v in config.OIL_SHOCK_PRESET.items() if k != "fuel_cost_share"})
+    oil_policy = dict(oil, tariff_increase_pct=0.10, comp_provision_share=0.4, cash_gap_payables_share=0.3, vat_trapped_share=0.5,
+                      comp_backlog_collected=0.6, cash_gap_short_term_share=0.7)
+    overshoot = dict(oil, tariff_increase_pct=0.30, fuel_shock_pct=0.10)
+    cheap_fuel = dict(oil, fuel_shock_pct=-0.30)
+    legacy = dict(custom, legacy_loss_assets=True)
+    scenarios = {"zero": zero, "combined": dict(config.DEFAULT_SHOCK_PARAMS), "custom": custom, "subsidy": subsidy, "overfull": overfull,
+                 "oil": oil, "oil_policy": oil_policy, "overshoot": overshoot, "cheap_fuel": cheap_fuel, "legacy": legacy}
     mc_corr = {"fuel|fx": 0.3, "fuel|rate": 0.2, "fx|rate": 0.4, "fuel|revenue": -0.3, "fx|revenue": -0.2, "rate|revenue": 0.0}
     psd_cases = [{"fuel|fx": 0.3}, {"fuel|fx": 0.9, "fuel|rate": 0.9, "fx|rate": -0.9}, {"fuel|fx": 1.0, "fuel|rate": 1.0, "fx|rate": 1.0},
                  {"fuel|fx": 0.5, "fuel|rate": -0.5, "fx|rate": 0.5}, {"fuel|fx": -0.8, "fuel|rate": -0.8, "fx|rate": -0.8}]
@@ -129,7 +144,7 @@ def main():
     qtest = [0.05, 0.25, 0.5, 0.75, 0.95]
     payload = {
         "engine": str(ROOT / "templates" / "engine.js"), "config": report.config_payload(), "rows": report.rows_payload(raw),
-        "keys": keys, "scenarios": scenarios, "H": H, "gre": gre_cases, "mc": {"entity": "SOE F", "n": 5000, "corr": mc_corr},
+        "keys": keys, "scenarios": scenarios, "cash_keys": CASH_KEYS, "H": H, "gre": gre_cases, "mc": {"entity": "SOE F", "n": 5000, "corr": mc_corr},
         "qvals": qvals, "qtest": qtest, "psd": psd_cases, "labels": labels, "headers": headers, "cells": cells, "texts": texts,
     }
     res = subprocess.run([node, "-e", NODE_RUNNER], input=json.dumps(payload), capture_output=True, text=True, check=True)
@@ -176,6 +191,11 @@ def main():
                     fails.append(f"path {name} {r['Entity']} t={t}: py={path['Z_EM'].iloc[t]:.6f}/{path['Rating'].iloc[t]} js={j['z'][t]}/{j['rating'][t]}")
                 if not close(path["Direct Fuel Subsidy"].iloc[t], j["sub"][t], 1e-9):
                     fails.append(f"fuel subsidy {name} {r['Entity']} t={t}: py={path['Direct Fuel Subsidy'].iloc[t]} js={j['sub'][t]}")
+                for k, jv in zip(CASH_KEYS, j["cash"][t]):
+                    pv = path[k].iloc[t]
+                    if not close(None if pv != pv else float(pv), jv, 1e-9):
+                        fails.append(f"cash channel {name} {r['Entity']} t={t} {k}: py={pv} js={jv}")
+                n_extra += len(CASH_KEYS)
             if shocks.describe_active_shocks(pp) != j["desc"]:
                 fails.append(f"describe {name}: py={shocks.describe_active_shocks(pp)} js={j['desc']}")
     # GRE — replicate strategic_soe.py logic in Python for the same cases
@@ -217,10 +237,14 @@ def main():
                                  rate_std_bps=150, revenue_std_sd=0.8, correlations=mc_corr, ead_share=0.8)
     fin4 = mc4[mc4["Projection Year"] == H]
     py4 = {"p50": fin4["EFC"].quantile(0.5), "p95": fin4["EFC"].quantile(0.95), "zp50": fin4["Z_EM"].quantile(0.5), "distress": (fin4["Zone"] == "Distress").mean()}
+    # EFC percentiles jump between rating bands (PD is a step function of the rating), so when a percentile sits
+    # on a band boundary the two generators can land on neighbouring bands. Such a value still passes when it lies
+    # within the sampling band of the Python draws (±5 percentile points around the target percentile).
+    efc_band = {"p50": fin4["EFC"].quantile([0.45, 0.55]).tolist(), "p95": fin4["EFC"].quantile([0.90, 0.99]).tolist()}
     for k, v in py4.items():
         rel = abs(v - js["mc4"][k]) / max(abs(v), 1e-9)
-        # the 95th percentile of EFC jumps between rating bands, so it is the noisiest statistic
-        if rel > {"p50": 0.03, "p95": 0.06, "zp50": 0.03, "distress": 0.08}[k] and abs(v - js["mc4"][k]) > 0.01:
+        in_band = k in efc_band and efc_band[k][0] <= js["mc4"][k] <= efc_band[k][1]
+        if rel > {"p50": 0.03, "p95": 0.06, "zp50": 0.03, "distress": 0.08}[k] and abs(v - js["mc4"][k]) > 0.01 and not in_band:
             fails.append(f"MC4 {k}: py={v:.6g} js={js['mc4'][k]:.6g} (rel {rel:.3f})")
     print("Monte Carlo, 4 variables:", {k: (round(v, 4), round(js["mc4"][k], 4)) for k, v in py4.items()})
     mom = js["mom"]

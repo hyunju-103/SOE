@@ -7,12 +7,27 @@ this is a policy-triage tool, not a precise multi-year forecast.
 
 Transmission channels (see SOE_shock_framework.pdf, Section 3, extended
 to FX/rate/revenue/arrears/refinancing per the boss-commissioned brief):
-  - Fuel:      the fuel-cost increase phi * OpEx * fuel_shock is split three ways:
+  - Fuel:      the fuel-cost increase phi * OpEx * fuel_shock is first reduced by
+               any end-user tariff increase (tariff_increase_pct * Revenue — policy
+               Option B; 0 = Option A, tariff freeze). What remains is split three ways:
                tariff_passthrough to customers (Case B), fuel_subsidy_share to the
-               government (Case C — a direct budget outlay, reported as "Direct Fuel
+               government (Case C — State compensation, reported as "Direct Fuel
                Subsidy"), and the rest absorbed by the SOE (Case A):
-               ΔEBIT = -phi * OpEx * fuel_shock * (1 - tariff_passthrough - fuel_subsidy_share)
-               With fuel_subsidy_share = 0 this is the original formula.
+               ΔEBIT = -(phi * OpEx * fuel_shock - tariff increase) * (1 - tariff_passthrough - fuel_subsidy_share)
+               With no tariff increase and fuel_subsidy_share = 0 this is the original formula.
+  - Cash:      State compensation is recognised (it never hits EBIT), but only
+               comp_paid_share of it arrives as cash in the year; the rest is a State
+               compensation receivable, collected at comp_backlog_collected a year
+               (comp_provision_share of it can be written off as a loss instead).
+               Input VAT on the extra fuel bill that cannot be recovered
+               (vat_rate * vat_trapped_share) is another cash outflow.
+               Cash funding gap = -Net Income + Δreceivable + trapped VAT. It is
+               borrowed: cash_gap_short_term_share in current liabilities (bank, or
+               unpaid supplier bills for cash_gap_payables_share), the rest long-term.
+               New bank and long-term debt carries new_debt_interest_rate (half a
+               year on the year's draw). A cash surplus repays the short-term debt
+               first. Defaults (config.DEFAULT_CASH_SETTINGS) reproduce the original
+               model: everything paid in-year, gap funded long-term, no interest.
   - FX (opex): ΔEBIT = -(fx_cost_share*OpEx - fx_revenue_share*Revenue) * fx_shock
   - Revenue:   ΔEBIT = revenue_elasticity * revenue_shock_pct * Revenue, where
                revenue_shock_pct = revenue_shock_std_devs * the SOE's own
@@ -35,10 +50,15 @@ clearing) runs the same formulas in reverse. Slider ranges enforcing this
 live on the Shock Scenarios page.
 
 Simplifications flagged for future calibration:
-  - Tax Expense and Current Liabilities held flat across the horizon.
-  - Net Income approximated as EBIT - Interest - Tax (holding Tax flat).
-  - Losses are assumed debt-financed (Total Liabilities absorbs the
-    financing gap) rather than modeling a cash/overdraft distinction.
+  - Tax Expense held flat across the horizon; Current Liabilities move only
+    through the short-term share of the cash funding gap (flat by default).
+  - Net Income carries the reported figure plus the shock's incremental effect.
+  - Every cash shortfall is borrowed (no opening cash buffer is drawn down).
+    A loss that is borrowed leaves total assets unchanged, so TA = TL + Equity
+    holds; legacy_loss_assets=True restores the original rule, in which the
+    loss also reduced total assets.
+  - The model is annual; a payment delay is expressed as the share paid
+    within the year (about 1 - delay_days / 365 for delays under a year).
   - Shocks apply at full magnitude for `shock_duration_years`, then EBIT/
     Interest revert to unshocked levels — but balance-sheet levels
     (debt, retained earnings, equity) that built up during the shock
@@ -79,23 +99,44 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
         "Depreciation": base_row["Depreciation"],
         "Revenue": base_row["Revenues"],
         "OpEx": base_row["Operating Expense"],
+        # stocks created by the shock
+        "Receivable": 0.0, "TrappedVAT": 0.0, "ShortTermDebt": 0.0, "SupplierArrears": 0.0, "LongTermDebt": 0.0,
+        # illiquid items already in base-year current assets, where reported (held flat)
+        "IlliquidOpen": _num(base_row.get("Government Arrears Owed"), 0.0) + _num(base_row.get("VAT Credits"), 0.0),
     }
 
-    state["FuelSubsidy"] = 0.0
     rows = []
     # Year 0: unshocked baseline
-    rows.append(_snapshot(base_row["Entity"], base_row.get("Sector", ""), int(base_row["Year"]), 0, state))
+    rows.append(_snapshot(base_row["Entity"], base_row.get("Sector", ""), int(base_row["Year"]), 0, state,
+                          {"ni": base_row["Net Income"]}))
+
+    subsidy_share = params.get("fuel_subsidy_share", 0.0) or 0.0
+    passthrough = params.get("tariff_passthrough", 0.0) or 0.0
+    tariff_up = params.get("tariff_increase_pct", 0.0) or 0.0
+    paid_share = _num(params.get("comp_paid_share"), 1.0)
+    collect_share = _num(params.get("comp_backlog_collected"), 1.0)
+    provision_share = _num(params.get("comp_provision_share"), 0.0)
+    st_share = _num(params.get("cash_gap_short_term_share"), 0.0)
+    ap_share = _num(params.get("cash_gap_payables_share"), 0.0)
+    rate = _num(params.get("new_debt_interest_rate"), 0.0)
+    vat_trap = _num(params.get("vat_rate"), 0.0) * _num(params.get("vat_trapped_share"), 0.0)
+    k_int = 1 - st_share * ap_share  # share of new funding that bears interest (supplier arrears do not)
 
     for t in range(1, horizon_years + 1):
         active = t <= duration
 
-        subsidy_share = params.get("fuel_subsidy_share", 0.0)
-        fuel_subsidy = 0.0
+        fuel_cost_increase = tariff_revenue = customer_share = compensation = trapped_vat = 0.0
         if active:
             fuel_cost_increase = params["fuel_cost_share"] * state["OpEx"] * params["fuel_shock_pct"]
-            absorbed_share = max(0.0, 1 - params["tariff_passthrough"] - subsidy_share)
-            d_ebit_fuel = -fuel_cost_increase * absorbed_share
-            fuel_subsidy = fuel_cost_increase * subsidy_share
+            tariff_revenue = tariff_up * state["Revenue"]                 # Option B: end-user tariff increase
+            remaining = fuel_cost_increase - tariff_revenue               # left after the tariff increase
+            if tariff_revenue > 0 and remaining < 0:
+                d_ebit_fuel = -remaining                                  # tariff more than covers it: SOE keeps the excess
+            else:
+                customer_share = remaining * passthrough                 # Case B
+                compensation = remaining * subsidy_share                 # Case C: State compensation recognised
+                d_ebit_fuel = -remaining * max(0.0, 1 - passthrough - subsidy_share)  # Case A
+            trapped_vat = max(0.0, fuel_cost_increase) * vat_trap
             d_ebit_fx = -(params["fx_cost_share"] * state["OpEx"] - params["fx_revenue_share"] * state["Revenue"]) * params["fx_shock_pct"]
             d_ebit_revenue = params["revenue_elasticity"] * params.get("revenue_shock_pct", 0.0) * state["Revenue"]
             d_interest_rate = params["floating_debt_share"] * state["TotalLiabilities"] * (params["rate_shock_bps"] / 10000.0)
@@ -107,8 +148,14 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
             d_ebit_fuel = d_ebit_fx = d_ebit_revenue = 0.0
             d_interest = d_equity_fx_reval = d_current_assets_arrears = 0.0
 
+        # State compensation: recognised vs. paid in cash
+        paid_now = compensation * paid_share if compensation > 0 else compensation  # a saving is settled at once
+        unpaid = compensation - paid_now
+        provision = unpaid * provision_share                     # unpaid amount written off as a loss
+        collected = state["Receivable"] * collect_share          # earlier years' unpaid compensation arriving now
+        d_receivable = unpaid - provision - collected
+
         ebit_t = base_row["Operating Profits (EBIT)"] + d_ebit_fuel + d_ebit_fx + d_ebit_revenue
-        interest_t = base_row["Interest Expense"] + d_interest
         # NI carries forward the SOE's ACTUAL reported Net Income, plus only
         # the shock's incremental effect — not a recomputation from
         # EBIT-Interest-Tax, which ignores other income/expense/tax-timing
@@ -116,25 +163,65 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
         # result. Under true zero shock (all deltas 0), NI_t = actual base
         # Net Income exactly, every year.
         d_ebit_total = d_ebit_fuel + d_ebit_fx + d_ebit_revenue
-        net_income_t = base_row["Net Income"] + d_ebit_total - d_interest
+        interest_open = rate * (state["ShortTermDebt"] + state["LongTermDebt"])
+        ni_before_new = base_row["Net Income"] + d_ebit_total - d_interest - provision - interest_open
 
-        financing_gap = max(0.0, -net_income_t)
+        # cash the SOE has to find this year (negative = surplus)
+        need = -ni_before_new + d_receivable + trapped_vat
+        funding = interest_new = repaid = left_over = 0.0
+        if need > 0:
+            funding = need / (1 - (k_int * rate) / 2)            # grossed up for half a year of interest on the draw
+            interest_new = (rate * k_int * funding) / 2
+        else:                                                    # surplus repays short-term debt first
+            surplus = -need
+            r_bank = min(surplus, state["ShortTermDebt"]); state["ShortTermDebt"] -= r_bank; surplus -= r_bank
+            r_ap = min(surplus, state["SupplierArrears"]); state["SupplierArrears"] -= r_ap; surplus -= r_ap
+            repaid = r_bank + r_ap
+            left_over = surplus
+        net_income_t = ni_before_new - interest_new
+        f_short = funding * st_share
+        f_ap = f_short * ap_share
+        f_bank = f_short - f_ap
+        f_long = funding - f_short
 
+        state["ShortTermDebt"] += f_bank
+        state["SupplierArrears"] += f_ap
+        state["LongTermDebt"] += f_long
+        state["Receivable"] += d_receivable
+        state["TrappedVAT"] += trapped_vat
         state["RetainedEarnings"] = state["RetainedEarnings"] + net_income_t
         state["Equity"] = state["Equity"] + net_income_t + d_equity_fx_reval
-        state["TotalLiabilities"] = state["TotalLiabilities"] + financing_gap - d_equity_fx_reval
-        state["CurrentAssets"] = state["CurrentAssets"] + d_current_assets_arrears
-        state["TotalAssets"] = state["TotalAssets"] + net_income_t + d_current_assets_arrears
+        state["CurrentLiabilities"] = state["CurrentLiabilities"] + (f_short - repaid)
+        state["TotalLiabilities"] = state["TotalLiabilities"] + (funding - repaid - d_equity_fx_reval)
+        state["CurrentAssets"] = state["CurrentAssets"] + (d_receivable + trapped_vat + d_current_assets_arrears)
+        state["TotalAssets"] = state["TotalAssets"] + (d_receivable + trapped_vat + d_current_assets_arrears + left_over)
+        if params.get("legacy_loss_assets") and need > 0:
+            state["TotalAssets"] += min(0.0, net_income_t)       # original rule: a borrowed loss also cuts total assets
         state["EBIT"] = ebit_t
-        state["Interest"] = interest_t
-        state["FuelSubsidy"] = fuel_subsidy
+        state["Interest"] = base_row["Interest Expense"] + d_interest + interest_open + interest_new
 
-        rows.append(_snapshot(base_row["Entity"], base_row.get("Sector", ""), int(base_row["Year"]) + t, t, state))
+        flows = {"inc": fuel_cost_increase, "tariff": tariff_revenue, "cust": customer_share, "comp": compensation,
+                 "paid": paid_now + collected, "provision": provision, "vat": trapped_vat, "fund": funding,
+                 "interest_new": interest_open + interest_new, "ni": net_income_t}
+        rows.append(_snapshot(base_row["Entity"], base_row.get("Sector", ""), int(base_row["Year"]) + t, t, state, flows))
 
     return pd.DataFrame(rows)
 
 
-def _snapshot(entity, sector, calendar_year, t, state) -> dict:
+def _num(v, default):
+    """A finite number, or `default` (missing columns, NaN, None)."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return default
+    return v if np.isfinite(v) else default
+
+
+def _ratio(a, b):
+    return a / b if b and np.isfinite(a) and np.isfinite(b) else float("nan")
+
+
+def _snapshot(entity, sector, calendar_year, t, state, flows) -> dict:
     working_capital = state["CurrentAssets"] - state["CurrentLiabilities"]
     x1, x2, x3, x4, z, zone = classify_zem_from_values(
         working_capital=working_capital,
@@ -144,6 +231,8 @@ def _snapshot(entity, sector, calendar_year, t, state) -> dict:
         equity=state["Equity"],
         total_liabilities=state["TotalLiabilities"],
     )
+    illiquid = state["IlliquidOpen"] + state["Receivable"] + state["TrappedVAT"]
+    f = lambda k: flows.get(k, 0.0)
     return {
         "Entity": entity,
         "Sector": sector,
@@ -151,6 +240,7 @@ def _snapshot(entity, sector, calendar_year, t, state) -> dict:
         "Projection Year": t,
         "EBIT": state["EBIT"],
         "Interest Expense": state["Interest"],
+        "Net Income": flows["ni"],
         "Retained Earnings": state["RetainedEarnings"],
         "Equity": state["Equity"],
         "Total Liabilities": state["TotalLiabilities"],
@@ -159,7 +249,27 @@ def _snapshot(entity, sector, calendar_year, t, state) -> dict:
         "Current Liabilities": state["CurrentLiabilities"],
         "X1": x1, "X2": x2, "X3": x3, "X4": x4,
         "Z_EM": z, "Zone": zone, "Rating": config.z_rating(z),
-        "Direct Fuel Subsidy": state.get("FuelSubsidy", 0.0),
+        # the government's recognised share of the fuel-cost change (Case C)
+        "Direct Fuel Subsidy": f("comp"),
+        # flows of the year
+        "Fuel Cost Change": f("inc"),
+        "Tariff Increase Revenue": f("tariff"),
+        "Tariff Pass-through": f("cust"),
+        "State Compensation Paid": f("paid"),          # cash from the budget this year
+        "Compensation Provision": f("provision"),
+        "Trapped VAT": f("vat"),
+        "Cash Funding Gap": f("fund"),
+        "Interest on New Debt": f("interest_new"),
+        # stocks at year end
+        "State Compensation Receivable": state["Receivable"],
+        "Trapped VAT Credits": state["TrappedVAT"],
+        "New Short-term Debt": state["ShortTermDebt"],
+        "Supplier Arrears": state["SupplierArrears"],
+        "New Long-term Debt": state["LongTermDebt"],
+        # liquidity and solvency
+        "Current Ratio": _ratio(state["CurrentAssets"], state["CurrentLiabilities"]),
+        "Adjusted Current Ratio": _ratio(state["CurrentAssets"] - illiquid, state["CurrentLiabilities"]),
+        "Debt to Assets": _ratio(state["TotalLiabilities"], state["TotalAssets"]),
     }
 
 
@@ -302,8 +412,14 @@ def describe_active_shocks(params: dict) -> str:
         parts.append(f"Refi {params['refinancing_spread_bps']:+.0f}bps")
     if params.get("arrears_pct_of_revenue", 0) != 0:
         parts.append(f"Arrears {params['arrears_pct_of_revenue']*100:+.0f}%/yr")
+    if params.get("tariff_increase_pct", 0):
+        parts.append(f"Tariff {params['tariff_increase_pct']*100:+.0f}%")
     if params.get("fuel_subsidy_share", 0) and params.get("fuel_shock_pct", 0):
         parts.append(f"gov. absorbs {params['fuel_subsidy_share']*100:.0f}% of fuel cost change")
+        paid = params.get("comp_paid_share")
+        paid = 1.0 if paid is None else paid
+        if paid < 1:
+            parts.append(f"{paid*100:.0f}% paid in-year")
 
     if not parts:
         return "No shock applied (baseline)"

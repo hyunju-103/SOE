@@ -62,6 +62,16 @@ def compute_kpis(df: pd.DataFrame) -> pd.DataFrame:
     ebit = out["Operating Profits (EBIT)"]
 
     out["operating_margin"] = _safe_div(ebit, revenue)
+    # Cost recovery: never substitute total/operating expense for the two
+    # distinct cost components, and do not guess absent grants as zero.
+    # The caller must confirm grants are already included in reported revenue.
+    cogs = pd.to_numeric(out.get("Cost of Goods Sold", pd.Series(np.nan, index=out.index)), errors="coerce")
+    other = pd.to_numeric(out.get("Other Operating Expenses", pd.Series(np.nan, index=out.index)), errors="coerce")
+    grants = pd.to_numeric(out.get("Government Grants", pd.Series(np.nan, index=out.index)), errors="coerce")
+    costs = cogs + other
+    out["cost_recovery"] = _safe_div(revenue - grants, costs).where(
+        cogs.notna() & other.notna() & grants.notna() & (costs > 0)
+    )
     out["net_margin"] = _safe_div(out["Net Income"], revenue)
     out["ebitda_margin"] = _safe_div(out["EBITDA"], revenue)
     out["roa"] = _safe_div(out["Net Income"], out["Total Assets"])
@@ -204,6 +214,9 @@ def soe_exposures(row: pd.Series) -> dict:
     pick("near_term_maturity_share", None, "Short Term Debt", tl, "Short Term Debt / Total Liabilities")
     for name in ("tariff_passthrough", "revenue_elasticity", "fuel_subsidy_share"):
         out[name] = (config.DEFAULT_EXPOSURES[name], "Default (placeholder)" if name != "fuel_subsidy_share" else "User (off by default)")
+    # cash and financing settings of the shock engine (policy, not observed)
+    for name, value in config.DEFAULT_CASH_SETTINGS.items():
+        out[name] = (value, "Policy setting (default keeps the original model)")
     return out
 
 

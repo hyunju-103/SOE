@@ -63,6 +63,11 @@
       o.Z_EM = z; o.Zone = classifyZone(z); o.Rating = zRating(z);
       const rev = r[K.rev], ebit = r[K.ebit], eq = r[K.eq], ebitda = r[K.ebitda];
       o.operating_margin = div(ebit, rev);
+      // Exact cost recovery components only; missing inputs remain n/a, not zero.
+      // Grants must already be part of reported revenue for this deduction to apply.
+      const cogs = r["Cost of Goods Sold"], otherCosts = r["Other Operating Expenses"], grants = r[K.grants];
+      const coveredCost = isNum(cogs) && isNum(otherCosts) ? cogs + otherCosts : NaN;
+      o.cost_recovery = isNum(grants) && isNum(coveredCost) && coveredCost > 0 ? div(rev - grants, coveredCost) : NaN;
       o.net_margin = div(r[K.ni], rev);
       o.ebitda_margin = div(ebitda, rev);
       o.roa = div(r[K.ni], r[K.ta]);
@@ -136,6 +141,8 @@
       pick("floating_debt_share", "Floating Rate Debt Share");
       pick("near_term_maturity_share", null, "Short Term Debt", tl, "Short Term Debt / Total Liabilities");
       for (const name of ["tariff_passthrough", "revenue_elasticity", "fuel_subsidy_share"]) out[name] = [CFG.DEFAULT_EXPOSURES[name], name === "fuel_subsidy_share" ? "User (off by default)" : "Default (placeholder)"];
+      // cash and financing settings of the shock engine (policy, not observed)
+      for (const [name, value] of Object.entries(CFG.DEFAULT_CASH_SETTINGS || {})) out[name] = [value, "Policy setting (default keeps the original model)"];
       return out;
     }
     function recoveryScenarios(sector) {
@@ -169,22 +176,39 @@
 
     /* ---------------- shocks.py ---------------- */
     function runScenario(base, p, H) {
+      const num = (v, d) => (isNum(v) ? v : d);
       const dur = p.shock_duration_years;
       const st = {
         EBIT: base[K.ebit], Interest: base[K.int], RE: base[K.re], Equity: base[K.eq], TL: base[K.tl], TA: base[K.ta],
         CA: base[K.ca], CL: base[K.cl], Revenue: base[K.rev], OpEx: base[K.opex],
+        Recv: 0, VAT: 0, STDebt: 0, Payables: 0, LTDebt: 0, // stocks created by the shock
+        // illiquid items already in the base-year current assets, where the file reports them (held flat)
+        IlliquidOpen: num(base["Government Arrears Owed"], 0) + num(base["VAT Credits"], 0),
       };
-      st.FuelSubsidy = 0;
-      const out = [snap(base, 0, st)];
-      const sub = p.fuel_subsidy_share || 0;
+      const out = [snap(base, 0, st, {})];
+      const sub = p.fuel_subsidy_share || 0, pt = p.tariff_passthrough || 0;
+      const tariffUp = p.tariff_increase_pct || 0;
+      const paidShare = num(p.comp_paid_share, 1), collectShare = num(p.comp_backlog_collected, 1), provShare = num(p.comp_provision_share, 0);
+      const stShare = num(p.cash_gap_short_term_share, 0), apShare = num(p.cash_gap_payables_share, 0);
+      const rate = num(p.new_debt_interest_rate, 0), vatTrap = num(p.vat_rate, 0) * num(p.vat_trapped_share, 0);
+      const kInt = 1 - stShare * apShare; // share of new funding that bears interest (unpaid supplier bills do not)
+
       for (let t = 1; t <= H; t++) {
         const active = t <= dur;
-        let dFuel = 0, dFx = 0, dRev = 0, dInt = 0, dReval = 0, dArr = 0, fuelSub = 0;
+        let dFuel = 0, dFx = 0, dRev = 0, dInt = 0, dReval = 0, dArr = 0;
+        let inc = 0, tariff = 0, cust = 0, comp = 0, vat = 0;
         if (active) {
-          // fuel-cost change split: tariff pass-through (Case B), government subsidy (Case C), rest absorbed (Case A)
-          const inc = p.fuel_cost_share * st.OpEx * p.fuel_shock_pct;
-          dFuel = -inc * Math.max(0, 1 - p.tariff_passthrough - sub);
-          fuelSub = inc * sub;
+          inc = p.fuel_cost_share * st.OpEx * p.fuel_shock_pct; // fuel-cost change
+          tariff = tariffUp * st.Revenue;                       // Option B: end-user tariff increase
+          const rem = inc - tariff;                             // what is left after the tariff increase
+          if (tariff > 0 && rem < 0) {
+            dFuel = -rem;                                       // tariff more than covers the fuel bill: SOE keeps the excess
+          } else {
+            cust = rem * pt;                                    // Case B: tariff pass-through
+            comp = rem * sub;                                   // Case C: State compensation recognised (RMA gap)
+            dFuel = -rem * Math.max(0, 1 - pt - sub);           // Case A: SOE absorbs the rest
+          }
+          vat = Math.max(0, inc) * vatTrap;                     // input VAT on the extra fuel bill that cannot be recovered
           dFx = -(p.fx_cost_share * st.OpEx - p.fx_revenue_share * st.Revenue) * p.fx_shock_pct;
           dRev = p.revenue_elasticity * (p.revenue_shock_pct || 0) * st.Revenue;
           const dRate = p.floating_debt_share * st.TL * (p.rate_shock_bps / 10000);
@@ -193,28 +217,79 @@
           dReval = -p.fx_debt_share * st.TL * p.fx_shock_pct;
           dArr = -p.arrears_pct_of_revenue * st.Revenue;
         }
+        // State compensation: recognised vs. paid in cash
+        const paidNow = comp > 0 ? comp * paidShare : comp;    // a saving (cheaper fuel) is settled at once
+        const unpaid = comp - paidNow;
+        const provision = unpaid * provShare;                  // unpaid amount treated as a loss (method A)
+        const collected = st.Recv * collectShare;              // earlier years' unpaid compensation arriving now
+        const dRecv = unpaid - provision - collected;
+
+        // net income before interest on this year's new borrowing
         const ebit = base[K.ebit] + dFuel + dFx + dRev;
-        const interest = base[K.int] + dInt;
-        const ni = base[K.ni] + (dFuel + dFx + dRev) - dInt;
-        const gap = Math.max(0, -ni);
+        const intOpen = rate * (st.STDebt + st.LTDebt);
+        const ni0 = base[K.ni] + (dFuel + dFx + dRev) - dInt - provision - intOpen;
+
+        // cash the SOE has to find this year (negative = surplus)
+        const need0 = -ni0 + dRecv + vat;
+        let fund = 0, intNew = 0, repay = 0, left = 0;
+        if (need0 > 0) {
+          fund = need0 / (1 - (kInt * rate) / 2);              // grossed up for half a year of interest on the draw
+          intNew = (rate * kInt * fund) / 2;
+        } else {                                               // surplus repays short-term debt first, the rest stays as assets
+          let s = -need0;
+          const rb = Math.min(s, st.STDebt); st.STDebt -= rb; s -= rb;
+          const ra = Math.min(s, st.Payables); st.Payables -= ra; s -= ra;
+          repay = rb + ra; left = s;
+        }
+        const ni = ni0 - intNew;
+        const fST = fund * stShare, fAP = fST * apShare, fBank = fST - fAP, fLT = fund - fST;
+
+        st.STDebt += fBank; st.Payables += fAP; st.LTDebt += fLT;
+        st.Recv += dRecv; st.VAT += vat;
         st.RE += ni;
         st.Equity += ni + dReval;
-        st.TL += gap - dReval;
-        st.CA += dArr;
-        st.TA += ni + dArr;
-        st.EBIT = ebit; st.Interest = interest; st.FuelSubsidy = fuelSub;
-        out.push(snap(base, t, st));
+        st.CL += fST - repay;
+        st.TL += fund - repay - dReval;
+        st.CA += dRecv + vat + dArr;
+        st.TA += dRecv + vat + dArr + left;
+        if (p.legacy_loss_assets && need0 > 0) st.TA += Math.min(0, ni); // optional: old rule, a borrowed loss also cuts total assets
+        st.EBIT = ebit;
+        st.Interest = base[K.int] + dInt + intOpen + intNew;
+        out.push(snap(base, t, st, { inc, tariff, cust, comp, paidNow, unpaid, collected, provision, vat, fund, fST, intNew: intOpen + intNew, ni }));
       }
       return out;
     }
-    function snap(base, t, st) {
+
+    function snap(base, t, st, f) {
       const z = zemFromValues(st.CA - st.CL, st.TA, st.RE, st.EBIT, st.Equity, st.TL);
+      const illiquid = st.IlliquidOpen + st.Recv + st.VAT;
       return {
         Entity: base.Entity, Sector: base.Sector, "Calendar Year": base.Year + t, "Projection Year": t,
-        EBIT: st.EBIT, "Interest Expense": st.Interest, "Retained Earnings": st.RE, Equity: st.Equity,
+        EBIT: st.EBIT, "Interest Expense": st.Interest, "Net Income": t === 0 ? base[K.ni] : f.ni,
+        "Retained Earnings": st.RE, Equity: st.Equity,
         "Total Liabilities": st.TL, "Total Assets": st.TA, "Current Assets": st.CA, "Current Liabilities": st.CL,
         X1: z.X1, X2: z.X2, X3: z.X3, X4: z.X4, Z_EM: z.Z_EM, Zone: z.Zone, Rating: zRating(z.Z_EM),
-        "Direct Fuel Subsidy": st.FuelSubsidy || 0,
+        // same meaning as before: the government's recognised share (Case C)
+        "Direct Fuel Subsidy": f.comp || 0,
+        // new flows
+        "Fuel Cost Change": f.inc || 0,
+        "Tariff Increase Revenue": f.tariff || 0,
+        "Tariff Pass-through": f.cust || 0,
+        "State Compensation Paid": (f.paidNow || 0) + (f.collected || 0), // cash from the budget this year
+        "Compensation Provision": f.provision || 0,
+        "Trapped VAT": f.vat || 0,
+        "Cash Funding Gap": f.fund || 0,
+        "Interest on New Debt": f.intNew || 0,
+        // new stocks
+        "State Compensation Receivable": st.Recv,
+        "Trapped VAT Credits": st.VAT,
+        "New Short-term Debt": st.STDebt,
+        "Supplier Arrears": st.Payables,
+        "New Long-term Debt": st.LTDebt,
+        // liquidity and solvency
+        "Current Ratio": div(st.CA, st.CL),
+        "Adjusted Current Ratio": div(st.CA - illiquid, st.CL), // excludes State receivables and trapped VAT
+        "Debt to Assets": div(st.TL, st.TA),
       };
     }
     /** adds PD, EAD (share × total liabilities), LGD, EFC (and EFC/GDP when a GDP path is given) to a scenario path */
@@ -241,7 +316,9 @@
       }
       if (p.refinancing_spread_bps && (p.near_term_maturity_share || 0) > 0) parts.push(`Refi ${pyPlus0(p.refinancing_spread_bps)}bps`);
       if (p.arrears_pct_of_revenue) parts.push(`Arrears ${pyPlus0(p.arrears_pct_of_revenue * 100)}%/yr`);
+      if (p.tariff_increase_pct) parts.push(`Tariff ${pyPlus0(p.tariff_increase_pct * 100)}%`);
       if (p.fuel_subsidy_share && p.fuel_shock_pct) parts.push(`gov. absorbs ${Math.round(p.fuel_subsidy_share * 100)}% of fuel cost change`);
+      if (p.fuel_subsidy_share && p.fuel_shock_pct && (p.comp_paid_share ?? 1) < 1) parts.push(`${Math.round((p.comp_paid_share ?? 1) * 100)}% paid in-year`);
       if (!parts.length) return "No shock applied (baseline)";
       return parts.join(", ") + (p.shock_duration_years ? ` — active ${p.shock_duration_years}yr` : "");
     }

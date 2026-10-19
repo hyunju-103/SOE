@@ -41,7 +41,9 @@ soe_tool/
 │   ├── app.js                 Tabs, controls and SVG charts
 │   └── engine.js              JavaScript port of the calculation modules
 ├── tests/
-│   └── check_engine_parity.py JS engine vs Python modules (needs Node.js)
+│   ├── check_engine_parity.py JS engine vs Python modules (needs Node.js)
+│   └── check_cash_channel.py  Oil-shock cash channel: legacy reproduction,
+│                                balance-sheet identity, cash arithmetic
 ├── .streamlit/config.toml     Widget colors matching the palette
 ├── assets/
 │   └── logo.png              top-nav wordmark (used via st.logo)
@@ -61,6 +63,8 @@ soe_tool/
 │   ├── efc.py                    Expected Fiscal Cost, PD×EAD×LGD; EAD as a
 │   │                               share of liabilities or guaranteed debt
 │   ├── shock_scenarios.py         Bottom-up exposures, fuel Cases A/B/C,
+│   │                               tariff policy and cash channel (delayed
+│   │                               State compensation, short-term funding),
 │   │                               single scenario / correlated Monte Carlo,
 │   │                               EFC-as-%-of-GDP path
 │   ├── strategic_soe.py           Government support (GRE) uplift
@@ -115,6 +119,7 @@ make the same change in `templates/engine.js` and run
 
 ```bash
 python tests/check_engine_parity.py     # needs Node.js; compares JS vs Python
+python tests/check_cash_channel.py      # oil-shock cash channel checks
 ```
 
 From a shell:
@@ -191,6 +196,12 @@ Almost everything tunable lives in **`config.py`**:
 - `SECTOR_FUEL_COST_SHARE`, `DEFAULT_SHOCK_PARAMS`, `DEFAULT_EXPOSURES`,
   `MC_DEFAULT_*` (incl. `MC_DEFAULT_CORRELATIONS`) — shock, exposure and
   Monte Carlo defaults
+- `DEFAULT_CASH_SETTINGS` — cash channel of the shock engine (State
+  compensation paid in-year, collection of unpaid compensation, write-off,
+  short-term / supplier-arrears funding of the cash gap, interest on new
+  debt, VAT). The defaults reproduce the original model
+- `OIL_SHOCK_PRESET` — the "Oil +60% with delayed State payment" preset
+  (SENELEC review assumptions; the 8% interest rate is a placeholder)
 - `EAD_SHARE_DEFAULT` / `EAD_SHARE_PRESETS` — EAD proxy (share of total
   liabilities; 60% / 80% sensitivity cases)
 - `PARAMETER_REGISTER` — one row per coefficient/threshold/default with its
@@ -221,14 +232,18 @@ Almost everything tunable lives in **`config.py`**:
   across simulations, correlated across channels.
 - LGD is user-set (1–100%); sector reference ranges are shown but not
   auto-applied.
-- The shock engine holds Tax Expense and Current Liabilities flat across
-  the horizon, carries the reported Net Income plus the shock's effect on
-  EBIT and interest, and assumes losses are debt-financed. See `shocks.py`
-  for full documentation.
-- Fuel: the fuel-cost change is split between customers (tariff
-  pass-through, Case B), the government (subsidy share, Case C — reported
-  as a direct fuel subsidy, a budget outlay on top of EFC) and the SOE (the
-  rest, Case A).
+- The shock engine holds Tax Expense flat across the horizon and carries
+  the reported Net Income plus the shock's effect on EBIT and interest.
+  Every cash shortfall is borrowed (no opening cash buffer is drawn down):
+  long-term by default, or in current liabilities for the short-term share
+  set on the Cash & financing tab. A borrowed loss leaves total assets
+  unchanged (TA = TL + Equity); `legacy_loss_assets = True` restores the
+  original rule. The model is annual. See `shocks.py` for full documentation.
+- Fuel: an end-user tariff increase (policy Option B) is applied first; the
+  rest of the fuel-cost change is split between customers (tariff
+  pass-through, Case B), the government (State compensation, Case C —
+  recognised in full, paid in cash only at the in-year paid share) and the
+  SOE (the rest, Case A).
 - The PDF-to-Excel extraction step is not part of this tool; the upload
   expects the standard schema (or recognisable synonyms) and records
   provenance columns when the file carries them.
@@ -238,3 +253,112 @@ Almost everything tunable lives in **`config.py`**:
 - Portfolio averages are simple means across SOEs — not asset-weighted.
 - A full guidance note (methodology, assumptions, calibration) is planned
   once the framework stabilizes — not yet built.
+
+## October 2026 — optional government-support workbook panels
+
+**No Senegal/Senelec financial statements are bundled or preloaded.** `Home.py`
+continues to start with the same built-in illustrative 8-SOE demo portfolio. A
+new workbook is only used after the viewer clicks **Upload data** and selects a
+local CSV/Excel file. Switching to any built-in dataset (or reloading) clears
+the uploaded dataset and its supplementary disclosures.
+
+Uploads are handled in the browser. The workbook's main `Data` tab is used if
+present, otherwise the first sheet. An extended workbook may also contain
+`Grants_detail`, `Source_lines`, `Validation`, `Checks`, and `Definitions`:
+
+- Main-sheet columns such as `tariff_pso_compensation`, `operating_subsidy`,
+  `investment_grant`, and `equity_injection` map to optional numeric schema
+  fields (the data dictionary shows the standardized labels).
+- Records in `Grants_detail` marked **Flow** can fill missing annual-support
+  cells on the main sheet for the matching SOE and year. If the grant sheet
+  supplies FCFA (ones), values are converted to the row's stated `Units`;
+  dissimilar currencies are rejected. Primary-sheet values win if sources
+  disagree, with reconciliation differences listed under **Assumptions**.
+- If a workbook has multiple SOEs, `Grants_detail` needs an `Entity` or `SOE`
+  column for an unambiguous join. Stocks, guarantees, and tax relief are not
+  summed with annual cash flows. Missing values are not silently set to 0.
+- **KPI Dashboard** adds a *reported vs mechanical ex-tariff-compensation
+  EBIT-margin* chart for uploaded records with a reported tariff-compensation
+  amount. The adjusted series is a sensitivity, not audited accounting.
+- **Government Support** adds a category-by-year annual-flow chart and table
+  but does not alter the existing GRE Role × Link rating-uplift methodology.
+- **Assumptions** lists supplementary workbook validation results, source
+  lines, grant details, and reconciliation issues. **Shock Scenarios** flags
+  missing actual exposure shares; its scenario equations are unchanged.
+- The four existing KPI charts, all nine page tabs and built-in datasets remain
+  unchanged. The Profitability dropdown continues to exclude EBITDA margin.
+- All line charts (historical, scenario, percentile fans, and the optional EBIT
+  comparison) use the same smooth spline from `config.LINE_SMOOTH_TENSION`.
+
+The Excel upload widget in the interactive HTML uses SheetJS (xlsx 0.18.5) via
+`cdnjs.cloudflare.com` on the first Excel upload and requires web access to
+that library. CSV uploads work without loading SheetJS. Streamlit must be
+served via `Home.py`, which already embeds the HTML UI with uploads enabled.
+
+
+## Profitability KPI: Cost recovery
+
+The **Cost recovery (x)** selection is **always displayed** inside the existing **KPI Dashboard → Profitability → Ratio** control, regardless of whether data for the metric exist. It is available in trend, comparison, and scorecard views, with the existing chart styles and illustrative thresholds.
+
+`Cost recovery = (Revenues - Government Grants) / (Cost of Goods Sold + Other Operating Expenses)`
+
+Excel/CSV uploads may use these column labels or schema keys `cost_of_goods_sold` / `other_operating_expenses`. There is no `Operating Expense` fallback: it is not necessarily equal to the named sum. Invalid/non-positive cost totals and missing components produce `n/a`; the KPI remains selectable but displays "Data unavailable" when no row contains the necessary inputs. **This computation assumes Government Grants were included in the supplied Revenues**, so verify statement classification to prevent double subtraction. Tariff/PSO already represented by Government Grants is not deducted separately, and investment grants/equity support must not be combined with the income-statement grants value. Illustrative traffic-light cutoffs: alert <1.00x, good >=1.10x.
+
+The built-in demo has no separate COGS and Other Operating Expenses components and is intentionally unchanged: its profitability dropdown nevertheless offers Cost recovery and shows "Data unavailable" until suitable data are uploaded. An uploaded Senelec workbook with all required fields automatically plots its actual values.
+
+## Persistent navigation and KPI catalog
+
+All nine top-level tabs, all configured KPI ratio choices (excluding intentionally removed EBITDA margin), and the new support/evidence panels remain visible with the built-in demo. Missing values display a `Data unavailable` message and, where appropriate, identify absent source fields. Uploading a compatible workbook populates existing controls; it does not reveal new navigation items. Missing observations are not silently treated as zero or counted as risk alerts.
+
+
+### Download any chart as PNG
+
+Move the pointer over any chart in the interactive `Home.py` dashboard, then click the small download icon in its upper-right corner. This saves **only that chart** as a high-resolution PNG (up to 3× the SVG resolution), rather than taking a screenshot of the entire page. The export works for all rendered SVG charts including KPI trends and comparisons, Altman Z-EM, Expected Fiscal Cost, Shock Scenarios and uploaded-workbook government-support charts. It uses no external image-export service. When a chart has no data, there is no image to download; its placeholder remains visible. Keyboard users can Tab to the icon. All page menus and KPI choices remain available without an upload.
+
+The optional `classic.py` multipage Streamlit interface uses Plotly's image-download icon on chart hover as well.
+
+## Oil shock: cash, State compensation and tariff policy
+
+Follows the review note on SENELEC: an oil shock is not only a cost shock, it
+opens a gap between fuel bills paid now and State compensation paid later,
+which the utility borrows to cover.
+
+- **Fuel tab** — *End-user tariff increase* (Option A = 0% freeze, Option B =
+  +10–15%) and *State compensation share (Case C)*: the share of the
+  remaining fuel-cost change the State compensates (for SENELEC, the gap
+  between the regulator's allowed revenue, RMA, and tariff revenue).
+- **Cash & financing tab** — share of the compensation paid in the same year
+  (a ~300-day lag is about 18%; the review uses 30%), share of unpaid
+  compensation collected the next year, share written off as a loss (100% =
+  the "treat unpaid compensation as a loss" proxy), share of the cash gap
+  funded short-term and via unpaid supplier bills, interest rate on new
+  borrowing, unrecovered input VAT on the extra fuel bill.
+- **Presets** — "Oil +60% with delayed State payment" (`OIL_SHOCK_PRESET`),
+  "Option A: tariff freeze", "Option B: +10%" and "+15%". In the Python
+  version the oil preset is a switch above the tabs.
+- **Liquidity & State compensation card** — State compensation recognised,
+  paid in cash and still unpaid; cash funding gap, new short-term debt,
+  supplier arrears and interest; current ratio, adjusted current ratio
+  (without State receivables and trapped VAT) and debt to assets; who pays
+  the fuel-cost change; and a year-by-year table. The scenario CSV carries
+  the same columns.
+- Optional data columns: `Government Arrears Owed` is read as the opening
+  State receivable and `VAT Credits` as the opening trapped VAT; both are
+  left out of the adjusted current ratio.
+
+Reading the results: when a receivable is funded with short-term debt, equal
+amounts are added to current assets and current liabilities, so a current
+ratio below 1 can rise. Net income and Z-EM barely move while compensation
+is booked as revenue; the stress shows in cash, short-term debt, the
+adjusted current ratio and the State's unpaid bill. Writing unpaid
+compensation off as a loss moves Z-EM.
+
+With every new setting at its default the engine gives the original
+results, except that a borrowed loss no longer reduces total assets. In the
+demo portfolio's standard stress, zones, ratings, EFC and the early-warning
+flags stay the same; only the Z-EM values of the loss-making SOEs become
+less negative (SOE A −16.5 → −9.3 in the final year). Longer horizons or
+other scenarios can move a rating band.
+`DEFAULT_SHOCK_PARAMS["legacy_loss_assets"] = True` brings the old numbers
+back exactly.
+
