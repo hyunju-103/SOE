@@ -22,7 +22,7 @@ ZONE_STATUS = {"Distress": "alert", "Grey": "watch", "Safe": "ok"}
 ZONE_TEXT = {"Distress": "■ Distress", "Grey": "▲ Grey zone", "Safe": "● Safe"}
 RAG_STATUS = {"Red": "alert", "Amber": "watch", "Green": "ok"}
 MAGNITUDES = ["fuel_shock_pct", "fx_shock_pct", "rate_shock_bps", "revenue_shock_std_devs",
-              "refinancing_spread_bps", "arrears_pct_of_revenue", "tariff_increase_pct"]
+              "refinancing_spread_bps", "arrears_pct_of_revenue", "tariff_increase_pct", "fuel_shock_path"]
 # ratios the calculation layer sets to NaN when the denominator is not positive; read as an alert
 SUPPRESSED = {"roe": "Equity", "debt_to_equity": "Equity", "debt_to_ebitda": "EBITDA",
               "depreciation_to_ebitda": "EBITDA", "effective_tax_rate": "Operating Profits (EBIT)"}
@@ -153,7 +153,7 @@ def stress_all(df_all: pd.DataFrame, lgd_pct=config.LGD_SLIDER_DEFAULT, ead_shar
     horizon = horizon or config.MC_HORIZON_YEARS
     duration = duration or config.DEFAULT_SHOCK_PARAMS["shock_duration_years"]
     mags = mags or {k: config.DEFAULT_SHOCK_PARAMS[k] for k in MAGNITUDES}
-    zero = {k: 0.0 for k in MAGNITUDES}
+    zero = {k: ([] if k == "fuel_shock_path" else 0.0) for k in MAGNITUDES}
     out = []
     for _, r in latest_per_entity(df_all).iterrows():
         base = _cost(shocks.run_scenario(r, _params(r, df_all, zero, duration, horizon, overrides), horizon), lgd_pct, ead_share)

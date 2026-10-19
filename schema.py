@@ -62,7 +62,7 @@ VARIABLES = [
        synonyms=["assets", "total asset", "assets total", "sum of assets"]),
     _v("current_assets", "Current Assets", "Current assets", "Balance sheet", required=True, used_by="Z-EM X1, liquidity KPIs",
        synonyms=["total current assets", "current asset"]),
-    _v("cash", "Cash and Equivalents", "Cash and equivalents", "Balance sheet", used_by="Carried (liquidity context)",
+    _v("cash", "Cash and Equivalents", "Cash and equivalents", "Balance sheet", used_by="Cash-first financing of shock cash gaps",
        synonyms=["cash", "cash and cash equivalents", "cash & cash equivalents", "cash and bank balances", "cash at bank"]),
     _v("receivables", "Receivables", "Receivables", "Balance sheet", used_by="Carried (arrears context)",
        synonyms=["trade receivables", "accounts receivable", "trade and other receivables", "debtors"]),
