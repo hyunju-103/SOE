@@ -42,8 +42,10 @@ soe_tool/
 │   └── engine.js              JavaScript port of the calculation modules
 ├── tests/
 │   ├── check_engine_parity.py JS engine vs Python modules (needs Node.js)
-│   └── check_cash_channel.py  Oil-shock cash channel: legacy reproduction,
-│                                balance-sheet identity, cash arithmetic
+│   ├── check_cash_channel.py  Oil-shock cash channel: legacy reproduction,
+│   │                            balance-sheet identity, cash arithmetic
+│   └── check_fuel_path_cash.py Fuel price path, oil linkage, tariff base,
+│                                cash-first financing; bit-exact vs 064ac24
 ├── .streamlit/config.toml     Widget colors matching the palette
 ├── assets/
 │   └── logo.png              top-nav wordmark (used via st.logo)
@@ -120,6 +122,7 @@ make the same change in `templates/engine.js` and run
 ```bash
 python tests/check_engine_parity.py     # needs Node.js; compares JS vs Python
 python tests/check_cash_channel.py      # oil-shock cash channel checks
+python tests/check_fuel_path_cash.py    # fuel path, oil linkage, tariff base, cash-first (needs git for the bit-exact part)
 ```
 
 From a shell:
@@ -327,21 +330,65 @@ which the utility borrows to cover.
   +10–15%) and *State compensation share (Case C)*: the share of the
   remaining fuel-cost change the State compensates (for SENELEC, the gap
   between the regulator's allowed revenue, RMA, and tariff revenue).
-- **Cash & financing tab** — share of the compensation paid in the same year
-  (a ~300-day lag is about 18%; the review uses 30%), share of unpaid
-  compensation collected the next year, share written off as a loss (100% =
-  the "treat unpaid compensation as a loss" proxy), share of the cash gap
-  funded short-term and via unpaid supplier bills, interest rate on new
-  borrowing, unrecovered input VAT on the extra fuel bill.
+  - *Fuel price path* (`fuel_shock_path`): one fuel price change per
+    projection year in whole percents, e.g. `0, 60, 30` = no change in year 1,
+    +60% in year 2, +30% in year 3, nothing after. It replaces the step shock
+    (fuel slider × shock duration) for the fuel channel only; the other shocks
+    keep the duration, and the tariff increase applies in the path's non-zero
+    years. Blank = the step, as before. This is how the IMF SOE Stress Test
+    Tool enters oil: an explicit annual price path.
+  - *Oil linkage of the fuel bill* (`fuel_oil_linkage`, ε): the share of the
+    fuel bill whose price follows oil (1 = all of it). The fuel-cost change is
+    fuel share × ε × operating expense × the shock; fuel share × ε is the IMF
+    tool's "share of oil in purchased inputs".
+  - *Tariff increase applies to* (`tariff_revenue_base`): all revenue, or
+    revenue less the `Government Grants` column (floored at 0). Use the second
+    when compensation for frozen tariffs is booked inside revenue, so a tariff
+    rise does not re-index it (SENELEC 2024: 214.7 bn of RMA compensation in
+    1,015.2 bn of revenue).
+- **Cash & financing tab** — share of the compensation paid in the same year,
+  share of unpaid compensation collected the next year, share written off as
+  a loss (100% = the "treat unpaid compensation as a loss" proxy), share of
+  the cash gap funded short-term and via unpaid supplier bills, interest rate
+  on new borrowing, unrecovered input VAT on the extra fuel bill, and
+  cash-first financing:
+  - *Cash drawn before borrowing* (`cash_buffer_share`, default 100%) and
+    *cash floor* (`cash_floor_opex_share`, default 0% of operating expense).
+    When the data report `Cash and Equivalents`, each year's cash shortfall
+    is paid first from cash above the floor, times the share; only the rest
+    is borrowed (short-term / long-term split as above). A later surplus
+    repays short-term debt, then rebuilds the cash drawn — never above the
+    cumulative drawdown; anything beyond stays in total assets as before.
+    This follows the financing order of the IMF SOE Stress Test Tool User
+    Guide (2023, Section VIII): cash first, then borrowing, then injections —
+    many SOEs in developing countries cannot borrow quickly. Without a cash
+    column, with the share at 0% or with `legacy_loss_assets=True` the rule is
+    off and every shortfall is borrowed, as before.
 - **Presets** — "Oil +60% with delayed State payment" (`OIL_SHOCK_PRESET`),
   "Option A: tariff freeze", "Option B: +10%" and "+15%". In the Python
-  version the oil preset is a switch above the tabs.
+  version the oil preset is a switch above the tabs. The oil preset now
+  carries the sourced SENELEC values: fuel price path +0/+60/+30/+0/+0% over
+  years 1–5 (from a 2024 base: +60% in 2026 per the task team's scenario,
+  half of it in 2027), fuel share 55% of operating expense (fuel purchases
+  494.9 / 888.5 bn, 2022), oil linkage 0.9 (coal 35.7 of 494.9 bn does not
+  follow oil), tariffs frozen, State compensation 100% with 60% paid in-year
+  (2022: 333.2 bn recognised, 135.8 bn still owed at year-end) and the rest
+  collected the next year, cash gap funded short-term at 3.3% (interest
+  14.6 / borrowings 430.8 bn, 2024), no trapped VAT, tariff base revenue less
+  grants. It also sets the horizon to at least 5 years so the path fits.
+  Sources: Assumptions page (`PARAMETER_REGISTER`).
 - **Liquidity & State compensation card** — State compensation recognised,
-  paid in cash and still unpaid; cash funding gap, new short-term debt,
-  supplier arrears and interest; current ratio, adjusted current ratio
-  (without State receivables and trapped VAT) and debt to assets; who pays
-  the fuel-cost change; and a year-by-year table. The scenario CSV carries
-  the same columns.
+  paid in cash and still unpaid; cash drawn down (opening → closing cash, and
+  the floor) and the amount borrowed after cash, when the SOE reports cash;
+  otherwise the cash funding gap; new short-term debt, supplier arrears and
+  interest; current ratio, adjusted current ratio (without State receivables
+  and trapped VAT) and debt to assets; who pays the fuel-cost change; and a
+  year-by-year table (with Cash drawn and Cash columns when cash-first is in
+  play). The scenario CSV carries the same columns, including
+  `Cash Drawdown` (after `Cash Funding Gap`, which is now the amount
+  borrowed) and `Cash` (after `New Long-term Debt`).
+- **Monte Carlo** — with a fuel price path, fuel draws are centred on the
+  path's peak and each draw rescales the whole path (its shape is kept).
 - Optional data columns: `Government Arrears Owed` is read as the opening
   State receivable and `VAT Credits` as the opening trapped VAT; both are
   left out of the adjusted current ratio.
@@ -353,12 +400,27 @@ is booked as revenue; the stress shows in cash, short-term debt, the
 adjusted current ratio and the State's unpaid bill. Writing unpaid
 compensation off as a loss moves Z-EM.
 
+Reading cash-first: paying a shortfall from cash lowers current assets, so
+working capital and X1 fall by 6.56 × draw / total assets, whereas long-term
+borrowing leaves working capital untouched. A cash-rich SOE can therefore
+score a lower Z-EM under the new default than under borrow-everything; that
+is the intended liquidity reading (the cash is gone). Less is borrowed,
+though, so liabilities (and EAD) are lower and X4 = equity / liabilities is
+higher, and the net effect can go either way: on a demo copy with cash at
+25% of current assets, the standard stress takes SOE C from CCC− to D but
+SOE D from AA+ to AAA. Set `cash_buffer_share` to 0 to compare.
+
 With every new setting at its default the engine gives the original
-results, except that a borrowed loss no longer reduces total assets. In the
+results, except that a borrowed loss no longer reduces total assets and,
+for an SOE whose data report `Cash and Equivalents`, a cash shortfall is
+paid from that cash before borrowing (the demo portfolio has no cash
+column, so its numbers are unaffected by this second rule). In the
 demo portfolio's standard stress, zones, ratings, EFC and the early-warning
 flags stay the same; only the Z-EM values of the loss-making SOEs become
 less negative (SOE A −16.5 → −9.3 in the final year). Longer horizons or
 other scenarios can move a rating band.
 `DEFAULT_SHOCK_PARAMS["legacy_loss_assets"] = True` brings the old numbers
-back exactly.
+back exactly (it also switches cash-first off); `cash_buffer_share = 0`
+keeps the balanced balance sheet but borrows every shortfall, which is the
+064ac24 engine bit for bit (`tests/check_fuel_path_cash.py`).
 
