@@ -7,9 +7,14 @@ this is a policy-triage tool, not a precise multi-year forecast.
 
 Transmission channels (see SOE_shock_framework.pdf, Section 3, extended
 to FX/rate/revenue/arrears/refinancing per the boss-commissioned brief):
-  - Fuel:      the fuel-cost increase phi * OpEx * fuel_shock is first reduced by
-               any end-user tariff increase (tariff_increase_pct * Revenue — policy
-               Option B; 0 = Option A, tariff freeze). What remains is split three ways:
+  - Fuel:      the fuel-cost increase phi * OpEx * fuel_oil_linkage * fuel_shock is first
+               reduced by any end-user tariff increase (tariff_increase_pct * Revenue, or
+               * max(0, Revenue - Government Grants) when tariff_revenue_base is
+               "revenue_ex_grants" — policy Option B; 0 = Option A, tariff freeze).
+               fuel_shock is fuel_shock_pct for shock_duration_years (step), or the
+               year's value of fuel_shock_path when a per-year path is given (index 0 =
+               projection year 1; zero beyond its end); the tariff increase applies in
+               the fuel-shock years. What remains is split three ways:
                tariff_passthrough to customers (Case B), fuel_subsidy_share to the
                government (Case C — State compensation, reported as "Direct Fuel
                Subsidy"), and the rest absorbed by the SOE (Case A):
@@ -21,13 +26,18 @@ to FX/rate/revenue/arrears/refinancing per the boss-commissioned brief):
                (comp_provision_share of it can be written off as a loss instead).
                Input VAT on the extra fuel bill that cannot be recovered
                (vat_rate * vat_trapped_share) is another cash outflow.
-               Cash funding gap = -Net Income + Δreceivable + trapped VAT. It is
-               borrowed: cash_gap_short_term_share in current liabilities (bank, or
+               Cash funding gap = -Net Income + Δreceivable + trapped VAT. Cash first:
+               cash_buffer_share of it (capped at the opening "Cash and Equivalents"
+               above a floor of cash_floor_opex_share * OpEx) is drawn from cash; the
+               rest is borrowed: cash_gap_short_term_share in current liabilities (bank, or
                unpaid supplier bills for cash_gap_payables_share), the rest long-term.
                New bank and long-term debt carries new_debt_interest_rate (half a
                year on the year's draw). A cash surplus repays the short-term debt
-               first. Defaults (config.DEFAULT_CASH_SETTINGS) reproduce the original
-               model: everything paid in-year, gap funded long-term, no interest.
+               first, then rebuilds the cash drawn in earlier years. Defaults
+               (config.DEFAULT_CASH_SETTINGS) reproduce the original model (everything
+               paid in-year, gap funded long-term, no interest) except that an SOE
+               reporting cash draws it down before borrowing; cash_buffer_share = 0
+               restores borrow-everything.
   - FX (opex): ΔEBIT = -(fx_cost_share*OpEx - fx_revenue_share*Revenue) * fx_shock
   - Revenue:   ΔEBIT = revenue_elasticity * revenue_shock_pct * Revenue, where
                revenue_shock_pct = revenue_shock_std_devs * the SOE's own
@@ -53,10 +63,11 @@ Simplifications flagged for future calibration:
   - Tax Expense held flat across the horizon; Current Liabilities move only
     through the short-term share of the cash funding gap (flat by default).
   - Net Income carries the reported figure plus the shock's incremental effect.
-  - Every cash shortfall is borrowed (no opening cash buffer is drawn down).
-    A loss that is borrowed leaves total assets unchanged, so TA = TL + Equity
-    holds; legacy_loss_assets=True restores the original rule, in which the
-    loss also reduced total assets.
+  - A cash shortfall is met from the opening cash buffer first (when the data
+    report "Cash and Equivalents"), then borrowed. A loss that is borrowed leaves
+    total assets unchanged and one paid from cash lowers them by the draw, so
+    TA = TL + Equity holds; legacy_loss_assets=True restores the original rule,
+    in which the loss also reduced total assets and no cash is drawn.
   - The model is annual; a payment delay is expressed as the share paid
     within the year (about 1 - delay_days / 365 for delays under a year).
   - Shocks apply at full magnitude for `shock_duration_years`, then EBIT/
@@ -84,6 +95,8 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
     unshocked, through horizon_years), including recomputed Z-EM.
     """
     duration = params["shock_duration_years"]
+    fpath = _fuel_path(params)  # per-year fuel price path, or None for the step profile
+    cash0 = _num(base_row.get("Cash and Equivalents"), float("nan"))
 
     # Mutable state carried year to year
     state = {
@@ -103,6 +116,8 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
         "Receivable": 0.0, "TrappedVAT": 0.0, "ShortTermDebt": 0.0, "SupplierArrears": 0.0, "LongTermDebt": 0.0,
         # illiquid items already in base-year current assets, where reported (held flat)
         "IlliquidOpen": _num(base_row.get("Government Arrears Owed"), 0.0) + _num(base_row.get("VAT Credits"), 0.0),
+        # opening cash (0 when the data do not report it) and the drawdown not yet rebuilt
+        "Cash": cash0 if np.isfinite(cash0) else 0.0, "CashDrawn": 0.0,
     }
 
     rows = []
@@ -121,14 +136,26 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
     rate = _num(params.get("new_debt_interest_rate"), 0.0)
     vat_trap = _num(params.get("vat_rate"), 0.0) * _num(params.get("vat_trapped_share"), 0.0)
     k_int = 1 - st_share * ap_share  # share of new funding that bears interest (supplier arrears do not)
+    eps = _num(params.get("fuel_oil_linkage"), 1.0)                 # share of the fuel bill that moves with the oil price
+    ex_grants = params.get("tariff_revenue_base") == "revenue_ex_grants"
+    grants = _num(base_row.get("Government Grants"), 0.0)           # compensation already booked in revenue
+    buf = min(1.0, max(0.0, _num(params.get("cash_buffer_share"), 1.0)))
+    floor = _num(params.get("cash_floor_opex_share"), 0.0)
+    cash_live = bool(np.isfinite(cash0)) and buf > 0 and not params.get("legacy_loss_assets")
 
     for t in range(1, horizon_years + 1):
         active = t <= duration
+        if fpath is None:                                                 # step: full magnitude while the shock is on
+            p_fuel, fuel_active = params["fuel_shock_pct"], active
+        else:                                                             # per-year path, zero beyond its end
+            p_fuel = fpath[t - 1] if t <= len(fpath) else 0.0
+            fuel_active = p_fuel != 0
 
-        fuel_cost_increase = tariff_revenue = customer_share = compensation = trapped_vat = 0.0
-        if active:
-            fuel_cost_increase = params["fuel_cost_share"] * state["OpEx"] * params["fuel_shock_pct"]
-            tariff_revenue = tariff_up * state["Revenue"]                 # Option B: end-user tariff increase
+        fuel_cost_increase = tariff_revenue = customer_share = compensation = trapped_vat = d_ebit_fuel = 0.0
+        if fuel_active:
+            fuel_cost_increase = params["fuel_cost_share"] * state["OpEx"] * eps * p_fuel
+            tariff_base = max(0.0, state["Revenue"] - grants) if ex_grants else state["Revenue"]
+            tariff_revenue = tariff_up * tariff_base                      # Option B: end-user tariff increase
             remaining = fuel_cost_increase - tariff_revenue               # left after the tariff increase
             if tariff_revenue > 0 and remaining < 0:
                 d_ebit_fuel = -remaining                                  # tariff more than covers it: SOE keeps the excess
@@ -137,6 +164,7 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
                 compensation = remaining * subsidy_share                 # Case C: State compensation recognised
                 d_ebit_fuel = -remaining * max(0.0, 1 - passthrough - subsidy_share)  # Case A
             trapped_vat = max(0.0, fuel_cost_increase) * vat_trap
+        if active:
             d_ebit_fx = -(params["fx_cost_share"] * state["OpEx"] - params["fx_revenue_share"] * state["Revenue"]) * params["fx_shock_pct"]
             d_ebit_revenue = params["revenue_elasticity"] * params.get("revenue_shock_pct", 0.0) * state["Revenue"]
             d_interest_rate = params["floating_debt_share"] * state["TotalLiabilities"] * (params["rate_shock_bps"] / 10000.0)
@@ -145,7 +173,7 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
             d_equity_fx_reval = -params["fx_debt_share"] * state["TotalLiabilities"] * params["fx_shock_pct"]
             d_current_assets_arrears = -params["arrears_pct_of_revenue"] * state["Revenue"]
         else:
-            d_ebit_fuel = d_ebit_fx = d_ebit_revenue = 0.0
+            d_ebit_fx = d_ebit_revenue = 0.0
             d_interest = d_equity_fx_reval = d_current_assets_arrears = 0.0
 
         # State compensation: recognised vs. paid in cash
@@ -168,9 +196,11 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
 
         # cash the SOE has to find this year (negative = surplus)
         need = -ni_before_new + d_receivable + trapped_vat
-        funding = interest_new = repaid = left_over = 0.0
+        funding = interest_new = repaid = left_over = draw = rebuilt = 0.0
         if need > 0:
-            funding = need / (1 - (k_int * rate) / 2)            # grossed up for half a year of interest on the draw
+            if cash_live:                                        # cash first, down to the floor
+                draw = min(need, max(0.0, state["Cash"] - floor * state["OpEx"])) * buf
+            funding = (need - draw) / (1 - (k_int * rate) / 2)   # the rest borrowed, grossed up for half a year of interest
             interest_new = (rate * k_int * funding) / 2
         else:                                                    # surplus repays short-term debt first
             surplus = -need
@@ -178,6 +208,8 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
             r_ap = min(surplus, state["SupplierArrears"]); state["SupplierArrears"] -= r_ap; surplus -= r_ap
             repaid = r_bank + r_ap
             left_over = surplus
+            if cash_live:                                        # rebuilds the cash drawn in earlier years, no further
+                rebuilt = min(left_over, state["CashDrawn"])
         net_income_t = ni_before_new - interest_new
         f_short = funding * st_share
         f_ap = f_short * ap_share
@@ -197,11 +229,17 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
         state["TotalAssets"] = state["TotalAssets"] + (d_receivable + trapped_vat + d_current_assets_arrears + left_over)
         if params.get("legacy_loss_assets") and need > 0:
             state["TotalAssets"] += min(0.0, net_income_t)       # original rule: a borrowed loss also cuts total assets
+        if draw:                                                 # cash paid out leaves current and total assets
+            state["Cash"] -= draw; state["CashDrawn"] += draw
+            state["CurrentAssets"] -= draw; state["TotalAssets"] -= draw
+        if rebuilt:                                              # part of the surplus (already in total assets) held as cash
+            state["Cash"] += rebuilt; state["CashDrawn"] -= rebuilt
+            state["CurrentAssets"] += rebuilt
         state["EBIT"] = ebit_t
         state["Interest"] = base_row["Interest Expense"] + d_interest + interest_open + interest_new
 
         flows = {"inc": fuel_cost_increase, "tariff": tariff_revenue, "cust": customer_share, "comp": compensation,
-                 "paid": paid_now + collected, "provision": provision, "vat": trapped_vat, "fund": funding,
+                 "paid": paid_now + collected, "provision": provision, "vat": trapped_vat, "fund": funding, "draw": draw,
                  "interest_new": interest_open + interest_new, "ni": net_income_t}
         rows.append(_snapshot(base_row["Entity"], base_row.get("Sector", ""), int(base_row["Year"]) + t, t, state, flows))
 
@@ -215,6 +253,17 @@ def _num(v, default):
     except (TypeError, ValueError):
         return default
     return v if np.isfinite(v) else default
+
+
+def _fuel_path(params):
+    """The per-year fuel price path (list of floats, index 0 = projection year
+    1), or None for the step profile: missing, empty, or a scalar (the
+    zero-shock dicts put 0.0 in every magnitude)."""
+    v = params.get("fuel_shock_path")
+    if v is None or np.isscalar(v):
+        return None
+    v = [_num(x, 0.0) for x in v]
+    return v or None
 
 
 def _ratio(a, b):
@@ -258,7 +307,8 @@ def _snapshot(entity, sector, calendar_year, t, state, flows) -> dict:
         "State Compensation Paid": f("paid"),          # cash from the budget this year
         "Compensation Provision": f("provision"),
         "Trapped VAT": f("vat"),
-        "Cash Funding Gap": f("fund"),
+        "Cash Funding Gap": f("fund"),                 # borrowed, after any cash drawn
+        "Cash Drawdown": f("draw"),                    # paid out of the opening cash buffer
         "Interest on New Debt": f("interest_new"),
         # stocks at year end
         "State Compensation Receivable": state["Receivable"],
@@ -266,6 +316,7 @@ def _snapshot(entity, sector, calendar_year, t, state, flows) -> dict:
         "New Short-term Debt": state["ShortTermDebt"],
         "Supplier Arrears": state["SupplierArrears"],
         "New Long-term Debt": state["LongTermDebt"],
+        "Cash": state["Cash"],
         # liquidity and solvency
         "Current Ratio": _ratio(state["CurrentAssets"], state["CurrentLiabilities"]),
         "Adjusted Current Ratio": _ratio(state["CurrentAssets"] - illiquid, state["CurrentLiabilities"]),
@@ -320,7 +371,9 @@ def run_monte_carlo(base_row: pd.Series, params: dict, n_sims: int, fuel_std: fl
                      revenue_std_sd: float = 0.0, correlations: dict | None = None,
                      ead_share: float = 1.0) -> pd.DataFrame:
     """Draw correlated shock magnitudes and run the scenario for each draw.
-    Fuel and FX are always drawn (centred on the slider values). Interest-rate
+    Fuel and FX are always drawn (centred on the slider values; with a fuel
+    price path, fuel is centred on the path's peak and each draw rescales the
+    whole path, keeping its shape). Interest-rate
     (bps) and revenue (standard deviations of own revenue growth) shocks are
     drawn too when their standard deviation is > 0; params["revenue_sigma"]
     converts revenue draws into a share of revenue. `correlations` holds the
@@ -332,7 +385,9 @@ def run_monte_carlo(base_row: pd.Series, params: dict, n_sims: int, fuel_std: fl
     corrs = dict(correlations) if correlations else {}
     corrs.setdefault("fuel|fx", correlation)
     names = ["fuel", "fx"] + (["rate"] if rate_std_bps > 0 else []) + (["revenue"] if revenue_std_sd > 0 else [])
-    means = {"fuel": params["fuel_shock_pct"], "fx": params["fx_shock_pct"],
+    fpath = _fuel_path(params)                   # with a path, fuel draws centre on its peak and rescale its shape
+    peak = max(fpath, key=abs) if fpath else None
+    means = {"fuel": params["fuel_shock_pct"] if fpath is None else peak, "fx": params["fx_shock_pct"],
              "rate": params.get("rate_shock_bps", 0.0), "revenue": params.get("revenue_shock_std_devs", 0.0)}
     sds = {"fuel": fuel_std, "fx": fx_std, "rate": rate_std_bps, "revenue": revenue_std_sd}
     if names == ["fuel", "fx"]:
@@ -351,6 +406,8 @@ def run_monte_carlo(base_row: pd.Series, params: dict, n_sims: int, fuel_std: fl
         sim_params = dict(params)
         drawn = dict(zip(names, draws[i]))
         sim_params["fuel_shock_pct"] = drawn["fuel"]
+        if fpath is not None:
+            sim_params["fuel_shock_path"] = [drawn["fuel"] * (v / peak) for v in fpath] if peak else list(fpath)
         sim_params["fx_shock_pct"] = drawn["fx"]
         if "rate" in drawn:
             sim_params["rate_shock_bps"] = drawn["rate"]
@@ -396,8 +453,15 @@ def describe_active_shocks(params: dict) -> str:
     pass-through, FX shares, etc.) are not shock magnitudes and are left
     out — only the channels that actually move something show up here."""
     parts = []
-    if params.get("fuel_shock_pct", 0) != 0:
-        parts.append(f"Fuel {params['fuel_shock_pct']*100:+.0f}%")
+    fpath = _fuel_path(params)
+    if fpath is not None:
+        parts.append("Fuel path " + "/".join(f"{v*100:+.0f}" for v in fpath) + "%")
+        fuel_on = any(v != 0 for v in fpath)
+    else:
+        fuel_on = params.get("fuel_shock_pct", 0) != 0
+        if fuel_on:
+            parts.append(f"Fuel {params['fuel_shock_pct']*100:+.0f}%")
+    n_fuel = len(parts)
     if params.get("fx_shock_pct", 0) != 0:
         parts.append(f"FX {params['fx_shock_pct']*100:+.0f}%")
     if params.get("rate_shock_bps", 0) != 0:
@@ -412,9 +476,10 @@ def describe_active_shocks(params: dict) -> str:
         parts.append(f"Refi {params['refinancing_spread_bps']:+.0f}bps")
     if params.get("arrears_pct_of_revenue", 0) != 0:
         parts.append(f"Arrears {params['arrears_pct_of_revenue']*100:+.0f}%/yr")
+    step_on = fpath is None or len(parts) > n_fuel        # a shock that runs for shock_duration_years
     if params.get("tariff_increase_pct", 0):
         parts.append(f"Tariff {params['tariff_increase_pct']*100:+.0f}%")
-    if params.get("fuel_subsidy_share", 0) and params.get("fuel_shock_pct", 0):
+    if params.get("fuel_subsidy_share", 0) and fuel_on:
         parts.append(f"gov. absorbs {params['fuel_subsidy_share']*100:.0f}% of fuel cost change")
         paid = params.get("comp_paid_share")
         paid = 1.0 if paid is None else paid
@@ -426,6 +491,6 @@ def describe_active_shocks(params: dict) -> str:
 
     duration = params.get("shock_duration_years")
     summary = ", ".join(parts)
-    if duration:
+    if duration and step_on:
         summary += f" — active {duration}yr"
     return summary
