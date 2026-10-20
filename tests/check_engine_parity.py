@@ -94,7 +94,9 @@ process.stdout.write(JSON.stringify(out, (k, v) => (typeof v === "number" && !Nu
 
 CASH_KEYS = ["Net Income", "Current Liabilities", "Current Assets", "Total Assets", "State Compensation Receivable",
              "State Compensation Paid", "Cash Funding Gap", "Interest on New Debt", "New Short-term Debt", "Supplier Arrears",
-             "Trapped VAT Credits", "Current Ratio", "Adjusted Current Ratio", "Debt to Assets", "Cash", "Cash Drawdown"]
+             "Trapped VAT Credits", "Current Ratio", "Adjusted Current Ratio", "Debt to Assets", "Cash", "Cash Drawdown",
+             "Interest Saved", "Emergency Support", "Tariff Share of RMA", "Refinanced Debt", "Cumulative Emergency Support", "New Long-term Debt",
+             "Interest Expense", "Equity"]
 
 
 def close(a, b, tol=1e-6):
@@ -116,6 +118,8 @@ def main():
     # a partial cash column, so cash-first financing runs for some SOEs and stays inert for the others
     raw["Cash and Equivalents"] = np.where(raw["Entity"].isin(["SOE A", "SOE C", "SOE D", "SOE G", "SOE H"]),
                                            0.25 * raw["Current Assets"].astype(float), np.nan)
+    # short-term bank debt for some SOEs (with and without cash), so the waterfall uses reported debt for them and the proxy for the rest
+    raw["Short Term Debt"] = np.where(raw["Entity"].isin(["SOE A", "SOE B", "SOE F"]), 0.3 * raw["Current Liabilities"].astype(float), np.nan)
     H = 3
     zero = dict(config.DEFAULT_SHOCK_PARAMS, **{k: 0.0 for k in ["fuel_shock_pct", "fx_shock_pct", "rate_shock_bps", "revenue_shock_std_devs", "refinancing_spread_bps", "arrears_pct_of_revenue"]})
     custom = dict(config.DEFAULT_SHOCK_PARAMS, fuel_shock_pct=-0.2, fx_shock_pct=0.45, rate_shock_bps=-150, revenue_shock_std_devs=1.5,
@@ -138,10 +142,20 @@ def main():
     cash_floor = dict(oil, cash_floor_opex_share=0.05)
     cash_half = dict(custom, cash_buffer_share=0.5)
     cash_off = dict(oil, cash_buffer_share=0.0)
+    # cash waterfall reform, borrowing cap (emergency support)
+    waterfall = dict(oil, waterfall_on=1.0)
+    waterfall_half = dict(oil_policy, waterfall_on=1.0, waterfall_refinance_share=0.5, short_term_debt_rate=0.085, waterfall_long_term_rate=0.03,
+                          refinancing_spread_bps=300)
+    waterfall_custom = dict(custom, **dict(config.DEFAULT_CASH_SETTINGS, waterfall_on=1.0))
+    cap = dict(oil, borrowing_cap_debt_to_assets=0.55, comp_paid_share=0.2)
+    cap_waterfall = dict(cap, waterfall_on=1.0, fx_shock_pct=0.3)
+    waterfall_legacy = dict(legacy, waterfall_on=1.0)
     scenarios = {"zero": zero, "combined": dict(config.DEFAULT_SHOCK_PARAMS), "custom": custom, "subsidy": subsidy, "overfull": overfull,
                  "oil": oil, "oil_policy": oil_policy, "overshoot": overshoot, "cheap_fuel": cheap_fuel, "legacy": legacy,
                  "path_step": path_step, "path_neg": path_neg, "linkage": linkage, "tariff_exg": tariff_exg,
-                 "cash_floor": cash_floor, "cash_half": cash_half, "cash_off": cash_off}
+                 "cash_floor": cash_floor, "cash_half": cash_half, "cash_off": cash_off,
+                 "waterfall": waterfall, "waterfall_half": waterfall_half, "waterfall_custom": waterfall_custom, "cap": cap,
+                 "cap_waterfall": cap_waterfall, "waterfall_legacy": waterfall_legacy}
     mc_corr = {"fuel|fx": 0.3, "fuel|rate": 0.2, "fx|rate": 0.4, "fuel|revenue": -0.3, "fx|revenue": -0.2, "rate|revenue": 0.0}
     psd_cases = [{"fuel|fx": 0.3}, {"fuel|fx": 0.9, "fuel|rate": 0.9, "fx|rate": -0.9}, {"fuel|fx": 1.0, "fuel|rate": 1.0, "fx|rate": 1.0},
                  {"fuel|fx": 0.5, "fuel|rate": -0.5, "fx|rate": 0.5}, {"fuel|fx": -0.8, "fuel|rate": -0.8, "fx|rate": -0.8}]

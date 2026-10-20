@@ -1,3 +1,4 @@
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
@@ -30,7 +31,7 @@ with st.expander("What do these shocks mean?"):
     rows = "".join(
         f"<tr><td style='font-weight:700;white-space:nowrap;'>{term}</td><td>{config.GLOSSARY[term]}</td></tr>"
         for term in ["Fuel shock", "Tariff pass-through", "Tariff increase", "State compensation", "State compensation receivable",
-                     "Cash funding gap", "Adjusted current ratio", "FX shock", "Interest rate shock",
+                     "Cash funding gap", "Adjusted current ratio", "Cash waterfall", "Emergency support", "RMA coverage", "FX shock", "Interest rate shock",
                      "Revenue shock", "Refinancing shock", "Government arrears", "Monte Carlo simulation", "Fiscal-at-risk"]
     )
     st.markdown(f"<table class='sfp-table sfp-table-wrap'><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
@@ -205,6 +206,34 @@ with t5:
                                            help="Minimum cash kept for operations, as a share of operating expense; only cash above it is drawn.")
         st.caption(_src_or_preset("cash_floor_opex_share"))
 
+    st.markdown(
+        f'<p class="sfp-hint"><b>Cash waterfall (reform).</b> {config.GLOSSARY["Cash waterfall"]} In the model: in the first projection year '
+        'the chosen share of short-term bank debt is refinanced into long-term loans (current liabilities fall, total liabilities do not, the rate '
+        'difference is saved every year), and no supplier arrears build up — a later cash gap is bank debt, on the split and rate above. '
+        '<b>Emergency support.</b> With a borrowing cap, new borrowing stops where total liabilities would pass that share of total assets, and the '
+        'government injects the rest as equity — a direct budget cost.</p>',
+        unsafe_allow_html=True,
+    )
+    w1, w2 = st.columns(2)
+    with w1:
+        waterfall_on = st.toggle("Cash waterfall in place", value=bool(_start("waterfall_on")),
+                                 help="Revenues into a protected account (SENELEC: the FSE), IPPs paid first, overdrafts refinanced long-term. "
+                                      "Off = the original model. The Liquidity card then compares the scenario with and without the reform.")
+        waterfall_refinance_share = st.slider("Short-term bank debt refinanced", 0.0, 1.0, _start("waterfall_refinance_share"), 0.05, disabled=not waterfall_on,
+                                              help="Share of short-term bank debt (overdrafts) replaced by structured long-term loans in the first projection year.")
+        _std = base_row.get("Short Term Debt")
+        if ov.ok(_std):
+            st.caption(f"Base: reported short-term debt {ov.money(float(_std), _scale)} {_cur} (at most the current liabilities).")
+        else:
+            st.caption(f"No 'Short Term Debt' in the data — proxy: near-term maturity share ({expo['near_term_maturity_share'][0]:.0%} to start) × total liabilities.")
+    with w2:
+        short_term_debt_rate = st.slider("Overdraft rate, refinanced (%)", 0.0, 20.0, _start("short_term_debt_rate") * 100, 0.5, disabled=not waterfall_on,
+                                         help="Rate on the overdrafts that are refinanced. SENELEC note: 7.5–8.5%.") / 100.0
+        waterfall_long_term_rate = st.slider("Long-term rate under the waterfall (%)", 0.0, 20.0, _start("waterfall_long_term_rate") * 100, 0.5, disabled=not waterfall_on,
+                                             help="Rate on the long-term loans that replace the overdrafts (placeholder; set from the refinancing terms).") / 100.0
+        borrowing_cap_debt_to_assets = st.slider("Borrowing cap before emergency support (debt / assets; 0 = off)", 0.0, 1.5,
+                                                 _start("borrowing_cap_debt_to_assets"), 0.05, help=config.GLOSSARY["Emergency support"])
+
 with t2:
     c1, c2 = st.columns(2)
     with c1:
@@ -273,6 +302,10 @@ params = {
     # fuel price path, oil linkage, tariff base, cash-first financing
     "fuel_shock_path": fuel_shock_path, "fuel_oil_linkage": fuel_oil_linkage, "tariff_revenue_base": tariff_revenue_base,
     "cash_buffer_share": cash_buffer_share, "cash_floor_opex_share": cash_floor_opex_share,
+    # cash waterfall reform and borrowing cap (emergency support)
+    "waterfall_on": 1.0 if waterfall_on else 0.0, "waterfall_refinance_share": waterfall_refinance_share,
+    "short_term_debt_rate": short_term_debt_rate, "waterfall_long_term_rate": waterfall_long_term_rate,
+    "borrowing_cap_debt_to_assets": borrowing_cap_debt_to_assets,
 }
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -337,6 +370,14 @@ if view_mode == "Single scenario":
                    f"government share {fuel_subsidy_share:.0%} · {comp_paid_share:.0%} paid in-year",
                    status="watch" if total_subsidy > 0 else "ok", status_text="▲ Recognised" if total_subsidy > 0 else "● Saving") if fuel_subsidy_share else None,
     ], container=strip_box)
+    total_support = scenario["Emergency Support"].sum()
+    if total_support > 0:
+        st.markdown(
+            f'<div class="sfp-alert warn">Emergency government support over the horizon: <b>{ov.money(total_support, _scale)} {_cur}</b> — capital '
+            f'injected once debt reaches {borrowing_cap_debt_to_assets:.2f} of assets, a budget outlay on top of the expected fiscal cost'
+            + (f' ({total_support / scenario["GDP"].iloc[1]:.2%} of year-1 GDP)' if base_gdp else '') + '.</div>',
+            unsafe_allow_html=True,
+        )
     if total_subsidy:
         st.markdown(
             f'<div class="sfp-alert info">State fuel compensation (Case C) over the horizon: <b>{ov.money(total_subsidy, _scale)} {_cur}</b> — a fiscal cost '
@@ -353,7 +394,16 @@ if view_mode == "Single scenario":
     funding_gap = yrs["Cash Funding Gap"].sum()
     cash_drawn = yrs["Cash Drawdown"].sum()
     cash_live = _has_cash and cash_buffer_share > 0 and not params["legacy_loss_assets"]  # cash-first is in play
-    if fuel_up != 0 or comp_recognised != 0 or cash_drawn != 0 or cash_gap_short_term_share > 0:  # the fuel / cash channel is in play
+    wf_live = waterfall_on and not params["legacy_loss_assets"]
+    cap_on = borrowing_cap_debt_to_assets > 0
+    if wf_live:  # the same scenario without the reform, for the comparison
+        _nowf = shocks.run_scenario(base_row, dict(params, waterfall_on=0.0), horizon_years)
+        _nowf["PD"] = _nowf["Rating"].apply(calculations.compute_pd_from_rating)
+        _nowf["EFC"] = _nowf["PD"] * _nowf["Total Liabilities"] * ead_share * lgd_pct / 100.0
+        _nowf["EFC_pct_GDP"] = _nowf["EFC"] / scenario["GDP"] if base_gdp else float("nan")
+    _rma = yrs[(yrs["Fuel Cost Change"] != 0) & yrs["Tariff Share of RMA"].notna()]
+    rma_low = _rma.loc[_rma["Tariff Share of RMA"].idxmin()] if len(_rma) else None
+    if fuel_up != 0 or comp_recognised != 0 or cash_drawn != 0 or cash_gap_short_term_share > 0 or wf_live or cap_on:  # the fuel / cash channel is in play
         tariff_rev, pass_through = yrs["Tariff Increase Revenue"].sum(), yrs["Tariff Pass-through"].sum()
         paid_total, provision_total = yrs["State Compensation Paid"].sum(), yrs["Compensation Provision"].sum()
         unpaid_end = final["State Compensation Receivable"]
@@ -381,8 +431,26 @@ if view_mode == "Single scenario":
             theme.tile("Current ratio", f"{final['Current Ratio']:.2f}", "",
                        f"from {base['Current Ratio']:.2f} · adjusted for illiquid State and VAT claims: {final['Adjusted Current Ratio']:.2f}",
                        status="watch" if final["Current Ratio"] < base["Current Ratio"] else None),
-            theme.tile("Debt to assets", f"{final['Debt to Assets']:.2f}", "", f"no shock {_fb['Debt to Assets']:.2f}",
+            theme.tile("Debt to assets", f"{final['Debt to Assets']:.2f}", "", f"no shock {_fb['Debt to Assets']:.2f}"
+                       + (f" · cap {borrowing_cap_debt_to_assets:.2f}" if cap_on else ""),
                        status="watch" if final["Debt to Assets"] > _fb["Debt to Assets"] else None),
+            theme.tile("Customers' share of the RMA", f"{rma_low['Tariff Share of RMA']:.1%}", "",
+                       f"{int(rma_low['Calendar Year'])}, lowest shock year · {base['Tariff Share of RMA']:.1%} in {int(base['Calendar Year'])} · "
+                       "revenue less grants (plus tariff increase and pass-through) / revenue + fuel-cost change",
+                       status="watch" if rma_low["Tariff Share of RMA"] < base["Tariff Share of RMA"] else None) if rma_low is not None else None,
+            theme.tile("Short-term debt refinanced", ov.money(final["Refinanced Debt"], _scale), _cur,
+                       f"{short_term_debt_rate:.1%} overdrafts → {waterfall_long_term_rate:.1%} long-term · interest saved "
+                       f"{ov.money(yrs['Interest Saved'].sum(), _scale)} over the horizon", status="ok", status_text="● Waterfall") if wf_live else None,
+            theme.tile(f"Z-EM in {_yr}: with vs without waterfall", ov.signed(final["Z_EM"] - _nowf["Z_EM"].iloc[-1], 2), "",
+                       f"{_nowf['Z_EM'].iloc[-1]:.2f} ({_nowf['Rating'].iloc[-1]}) without → {final['Z_EM']:.2f} ({final['Rating']}) with · "
+                       f"EFC {ov.money(_nowf['EFC'].iloc[-1], _scale)} → {ov.money(final['EFC'], _scale)}",
+                       status="ok" if final["Z_EM"] > _nowf["Z_EM"].iloc[-1] else "watch",
+                       status_text="● Better" if final["Z_EM"] > _nowf["Z_EM"].iloc[-1] else "▲ No gain") if wf_live else None,
+            theme.tile("Emergency government support", ov.money(yrs["Emergency Support"].sum(), _scale), _cur,
+                       f"capital injected once debt/assets reaches {borrowing_cap_debt_to_assets:.2f} — a budget cost on top of EFC"
+                       if yrs["Emergency Support"].sum() > 0 else f"debt/assets stays below the {borrowing_cap_debt_to_assets:.2f} cap",
+                       status="alert" if yrs["Emergency Support"].sum() > 0 else "ok",
+                       status_text="■ Injection" if yrs["Emergency Support"].sum() > 0 else "● None") if cap_on else None,
         ])
         cc1, cc2 = st.columns([5, 7])
         with cc1:
@@ -417,11 +485,32 @@ if view_mode == "Single scenario":
                      "Direct Fuel Subsidy": "State recognised", "State Compensation Paid": "State paid", "State Compensation Receivable": "Receivable",
                      **({"Cash Drawdown": "Cash drawn", "Cash": "Cash"} if cash_live else {}),
                      "Cash Funding Gap": "Borrowed" if cash_live else "Cash gap", "New Short-term Debt": "New ST debt", "Interest on New Debt": "New interest",
-                     "Net Income": "Net income", "Current Ratio": "Current ratio", "Adjusted Current Ratio": "Adjusted", "Debt to Assets": "Debt / assets"}
+                     **({"Interest Saved": "Interest saved"} if wf_live else {}), **({"Emergency Support": "Emergency support"} if cap_on else {}),
+                     "Net Income": "Net income", "Current Ratio": "Current ratio", "Adjusted Current Ratio": "Adjusted", "Debt to Assets": "Debt / assets",
+                     **({"Tariff Share of RMA": "Customers' share of RMA"} if pd.notna(base["Tariff Share of RMA"]) else {})}
         cash_df = scenario[list(cash_cols)].rename(columns=cash_cols)
-        money_cols = [c for c in cash_df.columns if c not in ("Year", "Current ratio", "Adjusted", "Debt / assets")]
-        st.dataframe(cash_df.style.format({**{c: "{:,.0f}" for c in money_cols}, "Current ratio": "{:.2f}", "Adjusted": "{:.2f}", "Debt / assets": "{:.2f}"}),
+        money_cols = [c for c in cash_df.columns if c not in ("Year", "Current ratio", "Adjusted", "Debt / assets", "Customers' share of RMA")]
+        st.dataframe(cash_df.style.format({**{c: "{:,.0f}" for c in money_cols}, "Current ratio": "{:.2f}", "Adjusted": "{:.2f}", "Debt / assets": "{:.2f}",
+                                           "Customers' share of RMA": "{:.1%}"}),
                      use_container_width=True, hide_index=True)
+        if wf_live:
+            st.markdown('<p class="sfp-hint"><b>Cash waterfall: the same scenario with and without the reform.</b> Both fund the cash gap as set above; '
+                        'with the reform none of it comes from paying IPPs late, and the refinanced overdrafts leave current liabilities in the first '
+                        'projection year. A large jump in EFC can come from a single rating step (PD is set per rating band).</p>', unsafe_allow_html=True)
+            _efc_col = "EFC_pct_GDP" if base_gdp else "EFC"
+            cmp_df = pd.DataFrame({
+                "Year": scenario["Calendar Year"].astype(int),
+                "Z-EM without": _nowf["Z_EM"], "Z-EM with": scenario["Z_EM"],
+                "Rating without → with": _nowf["Rating"] + " → " + scenario["Rating"],
+                "Current liabilities without": _nowf["Current Liabilities"], "with": scenario["Current Liabilities"],
+                "Current ratio without": _nowf["Current Ratio"], "with ": scenario["Current Ratio"],
+                ("EFC / GDP without" if base_gdp else "EFC without"): _nowf[_efc_col], ("EFC / GDP with" if base_gdp else "EFC with"): scenario[_efc_col],
+            })
+            _ef = "{:.2%}" if base_gdp else "{:,.0f}"
+            st.dataframe(cmp_df.style.format({"Z-EM without": "{:.2f}", "Z-EM with": "{:.2f}", "Current liabilities without": "{:,.0f}", "with": "{:,.0f}",
+                                              "Current ratio without": "{:.2f}", "with ": "{:.2f}",
+                                              ("EFC / GDP without" if base_gdp else "EFC without"): _ef, ("EFC / GDP with" if base_gdp else "EFC with"): _ef}),
+                         use_container_width=True, hide_index=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
     shock_summary = shocks.describe_active_shocks(params)

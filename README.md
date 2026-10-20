@@ -44,8 +44,10 @@ soe_tool/
 │   ├── check_engine_parity.py JS engine vs Python modules (needs Node.js)
 │   ├── check_cash_channel.py  Oil-shock cash channel: legacy reproduction,
 │   │                            balance-sheet identity, cash arithmetic
-│   └── check_fuel_path_cash.py Fuel price path, oil linkage, tariff base,
-│                                cash-first financing; bit-exact vs 064ac24
+│   ├── check_fuel_path_cash.py Fuel price path, oil linkage, tariff base,
+│   │                            cash-first financing; bit-exact vs 064ac24
+│   └── check_cash_waterfall.py Cash waterfall reform, borrowing cap
+│                                (emergency support), RMA coverage
 ├── .streamlit/config.toml     Widget colors matching the palette
 ├── assets/
 │   └── logo.png              top-nav wordmark (used via st.logo)
@@ -123,6 +125,7 @@ make the same change in `templates/engine.js` and run
 python tests/check_engine_parity.py     # needs Node.js; compares JS vs Python
 python tests/check_cash_channel.py      # oil-shock cash channel checks
 python tests/check_fuel_path_cash.py    # fuel path, oil linkage, tariff base, cash-first (needs git for the bit-exact part)
+python tests/check_cash_waterfall.py    # cash waterfall, borrowing cap / emergency support, RMA coverage
 ```
 
 From a shell:
@@ -364,8 +367,22 @@ which the utility borrows to cover.
     many SOEs in developing countries cannot borrow quickly. Without a cash
     column, with the share at 0% or with `legacy_loss_assets=True` the rule is
     off and every shortfall is borrowed, as before.
+  - *Cash waterfall (reform)*, off by default (`waterfall_on`). Revenues are
+    paid into a protected account (SENELEC: the FSE) and IPPs are paid first.
+    In projection year 1, `waterfall_refinance_share` of the short-term bank
+    debt (the `Short Term Debt` column, else near-term maturity share × total
+    liabilities) is refinanced long-term: current liabilities fall, total
+    liabilities do not, and (`short_term_debt_rate` − `waterfall_long_term_rate`)
+    is saved on it every year (defaults 8% and 5%). No supplier arrears build
+    up; a later cash gap is bank debt on the split and rate set above.
+  - *Borrowing cap before emergency support*
+    (`borrowing_cap_debt_to_assets`, 0 = off): new borrowing stops where total
+    liabilities / total assets would pass the cap, and the government injects
+    the rest as equity (`Emergency Support`), a budget cost on top of EFC.
+    See `docs/CHANGES-cash-waterfall.md`.
 - **Presets** — "Oil +60% with delayed State payment" (`OIL_SHOCK_PRESET`),
-  "Option A: tariff freeze", "Option B: +10%" and "+15%". In the Python
+  "Option A: tariff freeze", "Option B: +10%", "+15%" and "+ Cash waterfall
+  (reform)", which switches the reform on top of any scenario. In the Python
   version the oil preset is a switch above the tabs. The oil preset now
   carries the sourced SENELEC values: fuel price path +0/+60/+30/+0/+0% over
   years 1–5 (from a 2024 base: +60% in 2026 per the task team's scenario,
@@ -384,7 +401,11 @@ which the utility borrows to cover.
   interest; current ratio, adjusted current ratio (without State receivables
   and trapped VAT) and debt to assets; who pays the fuel-cost change; and a
   year-by-year table (with Cash drawn and Cash columns when cash-first is in
-  play). The scenario CSV carries the same columns, including
+  play). It also shows customers' share of the RMA (revenue less grants, plus
+  any tariff increase or pass-through, over revenue plus the fuel-cost change)
+  and, when they are on, the debt refinanced by the waterfall, the
+  Z-EM / EFC with and without the waterfall (tiles and a year-by-year
+  table), and emergency government support. The scenario CSV carries the same columns, including
   `Cash Drawdown` (after `Cash Funding Gap`, which is now the amount
   borrowed) and `Cash` (after `New Long-term Debt`).
 - **Monte Carlo** — with a fuel price path, fuel draws are centred on the

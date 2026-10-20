@@ -1400,6 +1400,7 @@
       const drawTab = () => {
         pbox.replaceChildren(...SLIDERS[st.ptab].map(sl));
         if (st.ptab === "fuel") pbox.append(this.pathField(), this.tariffBaseField(), H.fuelWarn);
+        if (st.ptab === "cash") pbox.append(...this.waterfallFields());
         if (st.ptab === "arrears") {
           pbox.append(
             fSlider("Projection horizon (years)", { min: 1, max: 7, step: 1, value: st.H, fmt: (v) => String(v), info: "How many years into the future to project.", id: "sh-H" }, (v) => { st.H = v; st.D = Math.min(st.D, v); const d = $("#sh-D"); if (d) { d.max = v; d.value = st.D; d.dispatchEvent(new Event("input")); } this.schedule(); }),
@@ -1418,6 +1419,8 @@
         rebuild();
       };
       const policy = (tu) => { st.mags.tariff_increase_pct = tu; Object.assign(st.expo, { tariff_passthrough: 0, fuel_subsidy_share: 1 }); rebuild(); };
+      const wfOn = (st.expo.waterfall_on || 0) > 0;
+      const waterfall = () => { if (wfOn) st.expo.waterfall_on = 0; else Object.assign(st.expo, CFG.WATERFALL_PRESET); rebuild(); };
       panel.body.append(el("div", { class: "fields" },
         el("div", { class: "fields two" },
           fSelect("SOE", S.names, st.soe, (v) => { st.soe = v; st.year = null; rebuild(); }),
@@ -1430,7 +1433,10 @@
           el("button", { class: "btn", type: "button", onclick: oilPreset }, `Oil ${pctSig(CFG.OIL_SHOCK_PRESET.fuel_shock_pct)} with delayed State payment`),
           el("button", { class: "btn-ghost", type: "button", onclick: () => policy(0) }, "Option A: tariff freeze"),
           el("button", { class: "btn-ghost", type: "button", onclick: () => policy(0.1) }, "Option B: +10%"),
-          el("button", { class: "btn-ghost", type: "button", onclick: () => policy(0.15) }, "Option B: +15%"))),
+          el("button", { class: "btn-ghost", type: "button", onclick: () => policy(0.15) }, "Option B: +15%"),
+          el("button", { class: wfOn ? "btn" : "btn-ghost", type: "button", "aria-pressed": String(wfOn), onclick: waterfall,
+            title: "Revenues into a protected account, IPPs paid first, short-term bank debt refinanced long-term (settings on the Cash & financing tab). Works on top of any scenario." },
+            wfOn ? "Cash waterfall: on" : "+ Cash waterfall (reform)"))),
         el("hr", { class: "divider" }), sub, pbox, el("hr", { class: "divider" }),
         el("div", { class: "fields" },
           fSlider("LGD", { min: CFG.LGD_SLIDER_MIN, max: CFG.LGD_SLIDER_MAX, step: 1, value: st.lgd, fmt: (v) => v + "%", info: CFG.GLOSSARY.LGD }, (v) => { st.lgd = v; this.schedule(); }),
@@ -1447,12 +1453,45 @@
         el("div", { class: "grid" }, el("div", { class: "s4 sticky-panel" }, panel.root), el("div", { class: "s8" }, el("div", { class: "card" }, el("div", { class: "row-ctl" }, el("div", { class: "fld" }, el("span", { class: "lbl" }, "View"), H.view)), H.desc), H.out)),
         el("div", { class: "foot" },
           el("div", {}, el("b", {}, "Simplifications. "), "Tax expense is held flat; net income carries the reported figure plus the shock's effect on EBIT and interest; any cash shortfall (losses, unpaid State compensation, trapped VAT) is paid first from the SOE's opening cash where the file reports it (above the floor on the Cash & financing tab), and the rest is borrowed — in current liabilities for the short-term share, otherwise as long-term debt; a later surplus repays short-term debt, then rebuilds the cash drawn; operating expense and revenue are held at base-year values."),
+          el("div", {}, el("b", {}, "Cash waterfall and emergency support. "), "With the cash waterfall on (Cash & financing tab), revenues go into a protected account and IPPs are paid first: no supplier arrears build up (a cash gap is bank debt, on the short-/long-term split and rate set for it), and in the first projection year the chosen share of the SOE's short-term bank debt (the 'Short Term Debt' column, else the near-term maturity share of total liabilities) is refinanced into long-term loans — current liabilities fall, total liabilities do not, and the rate difference is saved every year. The no-shock path uses the same policy, so the comparison isolates the shock; the Liquidity card compares the stressed path with and without the waterfall. With a borrowing cap, new borrowing stops where total liabilities would pass that share of total assets and the government injects the rest as equity (emergency support, a direct budget cost)."),
           el("div", {}, el("b", {}, "Fuel cost split. "), "The fuel-cost change is fuel share × oil linkage × operating expense × the fuel price shock — the slider for the shock years, or the year's value of the fuel price path when one is set (the tariff increase then applies in the path's non-zero years). A tariff increase (policy Option B) is applied first. What is left of the fuel-cost change is shared between customers (tariff pass-through, Case B), the government (compensation share, Case C) and the SOE (the rest, Case A). Government compensation is recognised as revenue when due but arrives as cash only at the in-year paid share; the rest is a receivable on the State."),
           el("div", {}, el("b", {}, "Monte Carlo. "), "Fuel and FX shock magnitudes are always drawn from a correlated normal distribution around their sliders (with a fuel price path, fuel is drawn around the path's peak and each draw rescales the whole path); the interest-rate and revenue shocks are drawn too when their standard deviation is above zero, with the correlations you set. Every other parameter stays at its slider value. The seed is fixed, so identical settings reproduce identical results.")));
       this.fuelCheck();
       if (st.view === "single") this.buildSingle(); else if (st.view === "mc") this.buildMC(); else this.buildAll();
     },
     schedule() { clearTimeout(this._t); this._t = setTimeout(() => this.render(), S.sh.view === "mc" ? 160 : 30); },
+    /** cash waterfall reform and borrowing cap (Cash & financing tab) */
+    waterfallFields() {
+      const st = S.sh, e = st.expo, b = this.base();
+      const std = b && ok(b["Short Term Debt"]) ? b["Short Term Debt"] : null;
+      const rate = (v) => fmt(v * 100, 1) + "%";
+      const baseNote = () => std !== null
+        ? `Refinanced: ${pct0(e.waterfall_refinance_share)} of the reported short-term debt (${money(std, true)}), at most the current liabilities.`
+        : `No 'Short Term Debt' in the data — proxy: near-term maturity share ${pct0(e.near_term_maturity_share)} × total liabilities = ${money((e.near_term_maturity_share || 0) * (b ? b["Total Liabilities"] : NaN), true)}; ${pct0(e.waterfall_refinance_share)} of it is refinanced.`;
+      const hint = el("small", {}, baseNote());
+      const on = (e.waterfall_on || 0) > 0;
+      const sliders = el("div", { class: "fields" },
+        fSlider("Short-term bank debt refinanced", { min: 0, max: 1, step: 0.05, value: e.waterfall_refinance_share, fmt: pct0, id: "sh-waterfall_refinance_share",
+          info: "Share of the SOE's short-term bank debt (overdrafts) replaced in the first projection year by structured long-term loans, once the protected account makes its cash flows predictable. It leaves current liabilities, so working capital (X1) improves; total liabilities do not change." },
+          (v) => { e.waterfall_refinance_share = v; hint.textContent = baseNote(); this.schedule(); }),
+        hint,
+        fSlider("Overdraft rate (refinanced)", { min: 0, max: 0.2, step: 0.005, value: e.short_term_debt_rate, fmt: rate, id: "sh-short_term_debt_rate",
+          info: "Interest rate on the overdrafts that are refinanced. SENELEC note: 7.5–8.5%." }, (v) => { e.short_term_debt_rate = v; this.schedule(); }),
+        fSlider("Long-term rate under the waterfall", { min: 0, max: 0.2, step: 0.005, value: e.waterfall_long_term_rate, fmt: rate, id: "sh-waterfall_long_term_rate",
+          info: "Rate on the long-term loans that replace the overdrafts. The difference with the overdraft rate is saved every year. Placeholder — set from the refinancing terms." },
+          (v) => { e.waterfall_long_term_rate = v; this.schedule(); }));
+      sliders.hidden = !on;
+      const sw = seg([[0, "Off"], [1, "On"]], on ? 1 : 0, (v) => { e.waterfall_on = v; rebuild(); }, "Cash waterfall"); // rebuild: the preset button shows the state too
+      return [
+        el("hr", { class: "divider" }),
+        el("div", { class: "fld" }, el("span", { class: "lbl" }, "Cash waterfall (reform)", info(CFG.GLOSSARY["Cash waterfall"] + " In the model: short-term bank debt refinanced long-term in year 1, and no supplier arrears — a later cash gap is bank debt, on the split and rate set above.")), sw),
+        sliders,
+        el("hr", { class: "divider" }),
+        fSlider("Borrowing cap before emergency support", { min: 0, max: 1.5, step: 0.05, value: e.borrowing_cap_debt_to_assets || 0, fmt: (v) => (v > 0 ? fmt(v, 2) + " debt/assets" : "off"), id: "sh-borrowing_cap_debt_to_assets",
+          info: CFG.GLOSSARY["Emergency support"] + " Set the ceiling as total liabilities / total assets (e.g. a covenant). 0 = off: the SOE can always borrow." },
+          (v) => { e.borrowing_cap_debt_to_assets = v; this.schedule(); }),
+      ];
+    },
     /** fuel price path: whole percents per projection year, e.g. "0, 60, 30"; blank = the step shock above */
     pathField() {
       const st = S.sh, id = "sh-fuel-path", y0 = st.year ?? "";
@@ -1545,19 +1584,25 @@
       else if (st.view === "mc") this.renderMC(b, p, gs);
       else this.renderAll(gs);
     },
-    renderCash(path, base, p) {
+    renderCash(path, base, p, noWf, gs) {
       const st = S.sh, H = this.H, f = last(path), f0 = path[0], fb = last(base);
       const yrs = path.slice(1), tot = (k) => sum(yrs.map((r) => r[k] || 0));
       const fuelUp = tot("Fuel Cost Change"), tariffUp = tot("Tariff Increase Revenue"), passT = tot("Tariff Pass-through");
       const recog = tot("Direct Fuel Subsidy"), paid = tot("State Compensation Paid"), gap = tot("Cash Funding Gap"), drawn = tot("Cash Drawdown");
       const b0 = this.base(), cashLive = ok(b0 && b0["Cash and Equivalents"]) && (p.cash_buffer_share ?? 1) > 0 && !p.legacy_loss_assets; // cash-first is in play
-      const show = fuelUp !== 0 || recog !== 0 || drawn !== 0 || (p.cash_gap_short_term_share || 0) > 0; // the fuel / cash channel is in play
+      const wfOn = !!noWf, capOn = (p.borrowing_cap_debt_to_assets || 0) > 0;
+      const support = tot("Emergency Support"), saved = tot("Interest Saved");
+      const show = fuelUp !== 0 || recog !== 0 || drawn !== 0 || (p.cash_gap_short_term_share || 0) > 0 || wfOn || capOn; // the fuel / cash channel is in play
       H.cash.root.hidden = !show;
       if (!show) return;
       const prov = tot("Compensation Provision"), unpaidEnd = f["State Compensation Receivable"];
       const peak = path.reduce((m, r) => (r["State Compensation Receivable"] > m["State Compensation Receivable"] ? r : m), path[0]);
       const soe = Math.max(0, fuelUp - tariffUp - passT - recog);
       const cr = (r) => fmt(r["Current Ratio"], 2), acr = (r) => fmt(r["Adjusted Current Ratio"], 2);
+      // customer share of the allowed revenue (RMA) in the worst shock year
+      const rmaYrs = yrs.filter((r) => ok(r["Tariff Share of RMA"]) && r["Fuel Cost Change"] !== 0);
+      const rmaLow = rmaYrs.length ? rmaYrs.reduce((m, r) => (r["Tariff Share of RMA"] < m["Tariff Share of RMA"] ? r : m)) : null;
+      const fn = wfOn ? last(noWf) : null;
       const tiles = el("div", { class: "grid4 sm" },
         tile("State compensation recognised", recog > 0 ? "watch" : null, recog > 0 ? "Obligation" : null, money(recog), CUR, "booked as SOE revenue over the projection"),
         tile("Paid in cash by the budget", null, null, money(paid), CUR, recog > 0 ? `${pct0(p.comp_paid_share ?? 1)} in the year it is due, the rest later` : "—"),
@@ -1567,19 +1612,39 @@
           `cash ${money(f0.Cash)} in ${f0["Calendar Year"]} → ${money(f.Cash)} in ${f["Calendar Year"]}` + ((p.cash_floor_opex_share || 0) > 0 ? ` · floor ${money(p.cash_floor_opex_share * b0["Operating Expense"])}` : "")) : null,
         tile(cashLive ? "Borrowed after cash" : "Cash funding gap", gap > 0 ? "watch" : "ok", gap > 0 ? "Borrowed" : "None", money(gap), CUR, (cashLive ? "shortfall left after the cash drawn · " : "") + `new short-term debt ${money(f["New Short-term Debt"])} · supplier arrears ${money(f["Supplier Arrears"])} · interest ${money(tot("Interest on New Debt"))}`),
         tile("Current ratio", f["Current Ratio"] < f0["Current Ratio"] ? "watch" : null, null, cr(f), "", `from ${cr(f0)} · adjusted for illiquid State and VAT claims: ${acr(f)}`),
-        tile("Debt to assets", f["Debt to Assets"] > fb["Debt to Assets"] ? "watch" : null, null, fmt(f["Debt to Assets"], 2), "", `no shock ${fmt(fb["Debt to Assets"], 2)}`));
+        tile("Debt to assets", f["Debt to Assets"] > fb["Debt to Assets"] ? "watch" : null, null, fmt(f["Debt to Assets"], 2), "", `no shock ${fmt(fb["Debt to Assets"], 2)}` + (capOn ? ` · cap ${fmt(p.borrowing_cap_debt_to_assets, 2)}` : "")),
+        rmaLow ? tile("Customers' share of the RMA", rmaLow["Tariff Share of RMA"] < f0["Tariff Share of RMA"] ? "watch" : null, null, pct(rmaLow["Tariff Share of RMA"], 1), "",
+          `${rmaLow["Calendar Year"]}, lowest shock year · ${pct(f0["Tariff Share of RMA"], 1)} in ${f0["Calendar Year"]} · revenue less grants (plus tariff increase and pass-through) / revenue + fuel-cost change`) : null,
+        wfOn ? tile("Short-term debt refinanced", "ok", "Waterfall", money(f["Refinanced Debt"]), CUR,
+          `${fmt((p.short_term_debt_rate || 0) * 100, 1)}% overdrafts → ${fmt((p.waterfall_long_term_rate || 0) * 100, 1)}% long-term · interest saved ${money(saved)} over the horizon`) : null,
+        wfOn ? tile(`Z-EM in ${f["Calendar Year"]}: with vs without waterfall`, f.Z_EM > fn.Z_EM ? "ok" : "watch", f.Z_EM > fn.Z_EM ? "Better" : "No gain", sgn(f.Z_EM - fn.Z_EM, 2), "",
+          `${fmt(fn.Z_EM, 2)} (${fn.Rating}) without → ${fmt(f.Z_EM, 2)} (${f.Rating}) with · EFC ${money(fn.EFC)} → ${money(f.EFC)}`) : null,
+        capOn ? tile("Emergency government support", support > 0 ? "alert" : "ok", support > 0 ? "Injection" : "None", money(support), CUR,
+          support > 0 ? `capital injected once debt/assets reaches ${fmt(p.borrowing_cap_debt_to_assets, 2)}` + (gs ? ` · ${pctS(support / gs[1])} of year-1 GDP` : "") + " — a budget cost on top of EFC" : `debt/assets stays below the ${fmt(p.borrowing_cap_debt_to_assets, 2)} cap`) : null);
       const split = [
         ["Customers", "tariff ↑", tariffUp], ["Customers", "pass-through", passT],
         ["State", "paid", paid], ["State", "unpaid", unpaidEnd + prov], ["SOE", "absorbs", soe],
       ].filter((r) => Math.abs(r[2]) > 0);
       const chart = el("div", { class: "chart" });
+      const hasRma = ok(f0["Tariff Share of RMA"]);
       const yrRows = path.map((r, i) => [String(r["Calendar Year"]) + (i === 0 ? " base" : ""), money(r["Fuel Cost Change"]), money(r["Tariff Increase Revenue"]), money(r["Direct Fuel Subsidy"]), money(r["State Compensation Paid"]),
-        money(r["State Compensation Receivable"]), ...(cashLive ? [money(r["Cash Drawdown"]), money(r.Cash)] : []), money(r["Cash Funding Gap"]), money(r["New Short-term Debt"]), money(r["Interest on New Debt"]), money(r["Net Income"]), cr(r), acr(r), fmt(r["Debt to Assets"], 2)]);
+        money(r["State Compensation Receivable"]), ...(cashLive ? [money(r["Cash Drawdown"]), money(r.Cash)] : []), money(r["Cash Funding Gap"]), money(r["New Short-term Debt"]), money(r["Interest on New Debt"]),
+        ...(wfOn ? [money(r["Interest Saved"])] : []), ...(capOn ? [money(r["Emergency Support"])] : []), money(r["Net Income"]), cr(r), acr(r), fmt(r["Debt to Assets"], 2), ...(hasRma ? [pct(r["Tariff Share of RMA"], 1)] : [])]);
+      // with vs without the cash waterfall, year by year
+      const efcK = gs ? "EFC_GDP" : "EFC", efcF = (v) => (gs ? pctS(v) : money(v));
+      const wfBlock = wfOn ? el("div", { style: "margin-top:16px" },
+        el("h3", { style: "font-size:13.5px;margin-bottom:6px" }, "Cash waterfall: the same scenario with and without the reform"),
+        simpleTable(["Year", "Z-EM without", "Z-EM with", "Rating without → with", "Current liabilities without", "with", "Current ratio without", "with", gs ? "EFC / GDP without" : "EFC without", "with"],
+          path.map((r, i) => { const q = noWf[i]; return [String(r["Calendar Year"]) + (i === 0 ? " base" : ""), fmt(q.Z_EM, 2), fmt(r.Z_EM, 2), `${q.Rating} → ${r.Rating}`, money(q["Current Liabilities"]), money(r["Current Liabilities"]), cr(q), cr(r), efcF(q[efcK]), efcF(r[efcK])]; }),
+          { right: (i) => i >= 1 && i !== 3, cls: "compact" }),
+        el("p", { class: "note" }, "Both columns fund the cash gap as set on the Cash & financing tab (short-term share, rate on new borrowing); with the reform no part of it comes from paying IPPs late, and the refinanced overdrafts leave current liabilities in the first projection year. A large jump in EFC between the two columns can come from a single rating step (PD is set per rating band).")) : null;
       H.cash.body.replaceChildren(tiles,
         el("div", { class: "grid", style: "margin-top:16px" },
           el("div", { class: "s5" }, el("h3", { style: "font-size:13.5px;margin-bottom:6px" }, `Who pays the fuel-cost change (${money(fuelUp, true)})`), chart),
           el("div", { class: "s7" }, el("p", { class: "note", style: "margin-top:0" }, "Net income stays close to the no-shock path because recognised compensation counts as revenue, but only the in-year paid share arrives as cash; the receivable is funded from the SOE's own cash first, where the file reports it, and then by borrowing. Paying from cash lowers current assets, so working capital (X1) falls, whereas long-term borrowing leaves it unchanged. When the current ratio starts below 1, adding the receivable to current assets and the new debt to current liabilities can even lift the reported ratio. The adjusted ratio leaves out the State receivable and trapped VAT, and shows the liquidity squeeze."))),
-        el("div", { style: "margin-top:12px" }, simpleTable(["Year", "Fuel cost Δ", "Tariff ↑", "State recognised", "State paid", "Receivable", ...(cashLive ? ["Cash drawn", "Cash"] : []), cashLive ? "Borrowed" : "Cash gap", "New ST debt", "New interest", "Net income", "Current ratio", "Adjusted", "Debt / assets"], yrRows, { right: (i) => i >= 1, cls: "compact" })));
+        el("div", { style: "margin-top:12px" }, simpleTable(["Year", "Fuel cost Δ", "Tariff ↑", "State recognised", "State paid", "Receivable", ...(cashLive ? ["Cash drawn", "Cash"] : []), cashLive ? "Borrowed" : "Cash gap", "New ST debt", "New interest",
+          ...(wfOn ? ["Interest saved"] : []), ...(capOn ? ["Emergency support"] : []), "Net income", "Current ratio", "Adjusted", "Debt / assets", ...(hasRma ? ["Customers' share of RMA"] : [])], yrRows, { right: (i) => i >= 1, cls: "compact" })),
+        wfBlock);
       if (!split.length) { chart.append(el("p", { class: "note" }, "No fuel-cost change in this scenario.")); return; }
       hbars(chart, split.map(([who, what, v]) => ({ label: who, sub: what, v, cls: "bar" + (who === "SOE" || what === "unpaid" ? " neg" : ""), lab: money(v), tipTitle: `${who} — ${what}`, tip: [[money(v, true), fuelUp ? `${pct0(v / fuelUp)} of the fuel-cost change` : ""]] })), { L: 120, R: 80, nTicks: 4, tick: (t, s) => moneyTick(t, s) });
     },
@@ -1591,14 +1656,15 @@
       const fp = p.fuel_shock_path && p.fuel_shock_path.length ? p.fuel_shock_path.slice(0, st.H) : null, nYrs = fp ? fp.filter((v) => v !== 0).length : Math.min(st.D, st.H);
       put(H.subsidy, subT ? el("div", { class: "alert-box warn", style: "margin-bottom:16px" }, el("span", {}, el("b", {}, `State fuel compensation: ${money(subT, true)} over ${pl(nYrs, "year")}`),
         subT > 0 ? ` — a budget outlay on top of the expected fiscal cost, because the government absorbs ${pct0(p.fuel_subsidy_share)} of the fuel-cost change (Case C).` : ` — negative: cheaper fuel lowers the ${pct0(p.fuel_subsidy_share)} share the government covers, a budget saving.`,
-        gs ? ` That is ${pctS(subT / gs[1])} of year-1 GDP.` : "")) : null);
+        gs ? ` That is ${pctS(subT / gs[1])} of year-1 GDP.` : ""), (() => { const sup = sum(path.map((r) => r["Emergency Support"])); return sup > 0 ? el("span", {}, el("br"), el("b", {}, `Emergency government support: ${money(sup, true)}`), ` — capital injected once the SOE hits its borrowing cap, also a budget outlay on top of the expected fiscal cost${gs ? ` (${pctS(sup / gs[1])} of year-1 GDP)` : ""}.`) : null; })()) : null);
       put(H.strip,
         tile(`Z-EM in ${f["Calendar Year"]}`, zk(f.Zone), ZLABEL[zk(f.Zone)], fmt(f.Z_EM, 2), `from ${fmt(f0.Z_EM, 2)}`, `${st.soe} · no shock ${fmt(fb.Z_EM, 2)} · base year ${f0["Calendar Year"]}`),
         tile("Final-year EFC", null, null, money(f.EFC), CUR, `No shock: ${money(fb.EFC)} · ${sgn(fb.EFC ? (f.EFC / fb.EFC - 1) * 100 : NaN, 0)}%`),
         tile("Zone migration", mig ? "watch" : "ok", mig ? "Yes" : "No", mig ? "Yes" : "No", "", `${f0.Zone} → ${f.Zone} by ${f["Calendar Year"]}`),
         tile("Final-year EFC / GDP", null, null, gs ? pctS(f.EFC_GDP) : "—", "", gs ? `GDP projected at ${fmt(S.growth * 100, 1)}%/yr` : "Enter GDP in the panel to populate"),
         hasSub ? tile("State compensation", subT > 0 ? "watch" : "ok", subT > 0 ? "Recognised" : "Saving", money(subT), CUR, `government share ${pct0(p.fuel_subsidy_share)} · ${pct0(p.comp_paid_share ?? 1)} paid in-year`) : null);
-      this.renderCash(path, base, p);
+      const noWf = (p.waterfall_on || 0) > 0 && !p.legacy_loss_assets ? E.costPath(E.runScenario(b, Object.assign({}, p, { waterfall_on: 0 }), st.H), st.lgd, gs, st.ead) : null;
+      this.renderCash(path, base, p, noWf, gs);
       const xs = path.map((r) => r["Calendar Year"]);
       const tipRows = (i) => [[fmt(path[i].Z_EM, 2), `stressed · ${path[i].Rating} · ${path[i].Zone}`], [fmt(base[i].Z_EM, 2), `no shock · ${base[i].Rating}`], [money(path[i].EFC), `EFC stressed (no shock ${money(base[i].EFC)})`]];
       lines(H.z.body.lastChild, xs, [{ vals: base.map((r) => r.Z_EM), cls: "ln-base", dot: "prev", skipFirstDot: true, label: "No shock" }, { vals: path.map((r) => r.Z_EM), cls: "ln-str", dot: "now", label: "Stressed" }],
@@ -1616,8 +1682,8 @@
       hbars(H.tor.body.firstChild, tor.map((r) => ({ label: r.key, sub: SHORT[r.key], v: r.weighted, cls: "bar" + (r.weighted < 0 ? " neg" : ""), lab: sgn(r.weighted, 2), tipTitle: r.Component, tip: [[sgn(r.weighted, 3), "weighted contribution to ΔZ″"], [`${fmt(r.base, 3)} → ${fmt(r.final, 3)}`, "ratio, base → final"]] })), { L: 120, R: 60, nTicks: 4 });
       const heads = ["Year", "EBIT", "Equity", "Liabilities", "Z-EM", "No shock", "Zone", "Rating", "PD", "EFC", ...(hasSub ? ["State compensation"] : []), ...(gs ? ["EFC / GDP"] : [])];
       H.proj.body.replaceChildren(simpleTable(heads, path.map((r, i) => [String(r["Calendar Year"]) + (i === 0 ? " base" : ""), money(r.EBIT), money(r.Equity), money(r["Total Liabilities"]), fmt(r.Z_EM, 2), fmt(base[i].Z_EM, 2), el("td", {}, zoneChip(r.Zone)), r.Rating, pctAuto(r.PD), money(r.EFC), ...(hasSub ? [money(r["Direct Fuel Subsidy"])] : []), ...(gs ? [pctS(r.EFC_GDP)] : [])]), { right: (i) => i >= 1 && i !== 6 && i !== 7, cls: "compact" }),
-        el("div", { style: "margin-top:10px" }, dataButtons(() => toCSV(["Calendar Year", "EBIT", "Interest Expense", "Retained Earnings", "Equity", "Total Liabilities", "Total Assets", "Current Assets", "X1", "X2", "X3", "X4", "Z_EM", "Z_EM_no_shock", "Zone", "Rating", "PD", "EAD", "EFC", "Direct Fuel Subsidy", "GDP", "EFC_GDP", "Current Liabilities", "Net Income", "Fuel Cost Change", "Tariff Increase Revenue", "State Compensation Paid", "State Compensation Receivable", "Compensation Provision", "Trapped VAT Credits", "Cash Funding Gap", "Cash Drawdown", "New Short-term Debt", "Supplier Arrears", "New Long-term Debt", "Cash", "Interest on New Debt", "Current Ratio", "Adjusted Current Ratio", "Debt to Assets"],
-          path.map((r, i) => [r["Calendar Year"], r.EBIT, r["Interest Expense"], r["Retained Earnings"], r.Equity, r["Total Liabilities"], r["Total Assets"], r["Current Assets"], r.X1, r.X2, r.X3, r.X4, r.Z_EM, base[i].Z_EM, r.Zone, r.Rating, r.PD, r.EAD, r.EFC, r["Direct Fuel Subsidy"], r.GDP, r.EFC_GDP, r["Current Liabilities"], r["Net Income"], r["Fuel Cost Change"], r["Tariff Increase Revenue"], r["State Compensation Paid"], r["State Compensation Receivable"], r["Compensation Provision"], r["Trapped VAT Credits"], r["Cash Funding Gap"], r["Cash Drawdown"], r["New Short-term Debt"], r["Supplier Arrears"], r["New Long-term Debt"], r.Cash, r["Interest on New Debt"], r["Current Ratio"], r["Adjusted Current Ratio"], r["Debt to Assets"]])), `scenario_${st.soe}.csv`)));
+        el("div", { style: "margin-top:10px" }, dataButtons(() => toCSV(["Calendar Year", "EBIT", "Interest Expense", "Retained Earnings", "Equity", "Total Liabilities", "Total Assets", "Current Assets", "X1", "X2", "X3", "X4", "Z_EM", "Z_EM_no_shock", "Zone", "Rating", "PD", "EAD", "EFC", "Direct Fuel Subsidy", "GDP", "EFC_GDP", "Current Liabilities", "Net Income", "Fuel Cost Change", "Tariff Increase Revenue", "State Compensation Paid", "State Compensation Receivable", "Compensation Provision", "Trapped VAT Credits", "Cash Funding Gap", "Cash Drawdown", "New Short-term Debt", "Supplier Arrears", "New Long-term Debt", "Cash", "Interest on New Debt", "Current Ratio", "Adjusted Current Ratio", "Debt to Assets", "Refinanced Debt", "Interest Saved", "Emergency Support", "Cumulative Emergency Support", "Tariff Share of RMA"],
+          path.map((r, i) => [r["Calendar Year"], r.EBIT, r["Interest Expense"], r["Retained Earnings"], r.Equity, r["Total Liabilities"], r["Total Assets"], r["Current Assets"], r.X1, r.X2, r.X3, r.X4, r.Z_EM, base[i].Z_EM, r.Zone, r.Rating, r.PD, r.EAD, r.EFC, r["Direct Fuel Subsidy"], r.GDP, r.EFC_GDP, r["Current Liabilities"], r["Net Income"], r["Fuel Cost Change"], r["Tariff Increase Revenue"], r["State Compensation Paid"], r["State Compensation Receivable"], r["Compensation Provision"], r["Trapped VAT Credits"], r["Cash Funding Gap"], r["Cash Drawdown"], r["New Short-term Debt"], r["Supplier Arrears"], r["New Long-term Debt"], r.Cash, r["Interest on New Debt"], r["Current Ratio"], r["Adjusted Current Ratio"], r["Debt to Assets"], r["Refinanced Debt"], r["Interest Saved"], r["Emergency Support"], r["Cumulative Emergency Support"], r["Tariff Share of RMA"]])), `scenario_${st.soe}.csv`)));
     },
     renderMC(b, p, gs) {
       const st = S.sh, m = st.mc, H = this.H;

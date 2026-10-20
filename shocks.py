@@ -38,6 +38,24 @@ to FX/rate/revenue/arrears/refinancing per the boss-commissioned brief):
                paid in-year, gap funded long-term, no interest) except that an SOE
                reporting cash draws it down before borrowing; cash_buffer_share = 0
                restores borrow-everything.
+  - Cash waterfall (reform, off by default: waterfall_on = 0): revenues are
+               ring-fenced in a protected FSE account and IPPs are paid first, so the
+               SOE runs no supplier arrears and can borrow on structured, long-term
+               terms. In projection year 1, waterfall_refinance_share of its short-term
+               bank debt ("Short Term Debt" in the data, else near_term_maturity_share *
+               Total Liabilities as a proxy) is refinanced into long-term loans: current
+               liabilities fall by that amount (X1 rises), total liabilities do not
+               change, and the SOE saves (short_term_debt_rate - waterfall_long_term_rate)
+               on it every year; the refinanced debt no longer rolls over at the
+               refinancing-shock spread. Borrowing for a later cash gap keeps the
+               short-/long-term split and rate set for it, but none of it comes from
+               paying suppliers late (cash_gap_payables_share is set to 0).
+  - Emergency support (off by default: borrowing_cap_debt_to_assets = 0): new
+               borrowing stops where total liabilities / total assets would pass the
+               cap; the rest of the cash gap is a government capital injection
+               ("Emergency Support"), a direct budget cost that raises equity. This is
+               the last step of the IMF SOE stress-test hierarchy: cash, then
+               borrowing, then injection.
   - FX (opex): ΔEBIT = -(fx_cost_share*OpEx - fx_revenue_share*Revenue) * fx_shock
   - Revenue:   ΔEBIT = revenue_elasticity * revenue_shock_pct * Revenue, where
                revenue_shock_pct = revenue_shock_std_devs * the SOE's own
@@ -118,12 +136,16 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
         "IlliquidOpen": _num(base_row.get("Government Arrears Owed"), 0.0) + _num(base_row.get("VAT Credits"), 0.0),
         # opening cash (0 when the data do not report it) and the drawdown not yet rebuilt
         "Cash": cash0 if np.isfinite(cash0) else 0.0, "CashDrawn": 0.0,
+        "Refinanced": 0.0, "Support": 0.0,
     }
 
     rows = []
     # Year 0: unshocked baseline
+    grants0 = _num(base_row.get("Government Grants"), float("nan"))
+    rev0 = base_row["Revenues"]
     rows.append(_snapshot(base_row["Entity"], base_row.get("Sector", ""), int(base_row["Year"]), 0, state,
-                          {"ni": base_row["Net Income"]}))
+                          {"ni": base_row["Net Income"],
+                           "rma_share": _ratio(rev0 - grants0, rev0) if np.isfinite(grants0) else float("nan")}))
 
     subsidy_share = params.get("fuel_subsidy_share", 0.0) or 0.0
     passthrough = params.get("tariff_passthrough", 0.0) or 0.0
@@ -142,6 +164,25 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
     buf = min(1.0, max(0.0, _num(params.get("cash_buffer_share"), 1.0)))
     floor = _num(params.get("cash_floor_opex_share"), 0.0)
     cash_live = bool(np.isfinite(cash0)) and buf > 0 and not params.get("legacy_loss_assets")
+    # cash waterfall (reform): IPPs paid first, short-term bank debt refinanced long-term in year 1
+    nts = params.get("near_term_maturity_share", 0.0)
+    wf_on = _num(params.get("waterfall_on"), 0.0) > 0 and not params.get("legacy_loss_assets")
+    refi = saving = 0.0
+    if wf_on:
+        std0 = _num(base_row.get("Short Term Debt"), float("nan"))
+        std_base = std0 if np.isfinite(std0) else _num(nts, 0.0) * state["TotalLiabilities"]
+        refi = min(max(0.0, _num(params.get("waterfall_refinance_share"), 0.0)) * max(0.0, std_base),
+                   max(0.0, state["CurrentLiabilities"]))
+        st_rate = _num(params.get("short_term_debt_rate"), 0.0)
+        lt_rate = _num(params.get("waterfall_long_term_rate"), 0.0)
+        saving = refi * (st_rate - lt_rate)                     # interest saved on the refinanced debt, every year
+        ap_share, k_int = 0.0, 1.0                              # IPPs paid first: no supplier arrears, the short-term part is bank debt
+        if state["TotalLiabilities"]:
+            nts = max(0.0, _num(nts, 0.0) - refi / state["TotalLiabilities"])  # refinanced debt no longer rolls over
+        state["CurrentLiabilities"] -= refi                     # moved to non-current: total liabilities unchanged
+        state["Refinanced"] = refi
+    cap = _num(params.get("borrowing_cap_debt_to_assets"), 0.0)  # 0 = no cap
+    grants_known = bool(np.isfinite(_num(base_row.get("Government Grants"), float("nan"))))
 
     for t in range(1, horizon_years + 1):
         active = t <= duration
@@ -168,7 +209,7 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
             d_ebit_fx = -(params["fx_cost_share"] * state["OpEx"] - params["fx_revenue_share"] * state["Revenue"]) * params["fx_shock_pct"]
             d_ebit_revenue = params["revenue_elasticity"] * params.get("revenue_shock_pct", 0.0) * state["Revenue"]
             d_interest_rate = params["floating_debt_share"] * state["TotalLiabilities"] * (params["rate_shock_bps"] / 10000.0)
-            d_interest_refi = params.get("near_term_maturity_share", 0.0) * state["TotalLiabilities"] * (params.get("refinancing_spread_bps", 0.0) / 10000.0)
+            d_interest_refi = nts * state["TotalLiabilities"] * (params.get("refinancing_spread_bps", 0.0) / 10000.0)
             d_interest = d_interest_rate + d_interest_refi
             d_equity_fx_reval = -params["fx_debt_share"] * state["TotalLiabilities"] * params["fx_shock_pct"]
             d_current_assets_arrears = -params["arrears_pct_of_revenue"] * state["Revenue"]
@@ -192,15 +233,21 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
         # Net Income exactly, every year.
         d_ebit_total = d_ebit_fuel + d_ebit_fx + d_ebit_revenue
         interest_open = rate * (state["ShortTermDebt"] + state["LongTermDebt"])
-        ni_before_new = base_row["Net Income"] + d_ebit_total - d_interest - provision - interest_open
+        ni_before_new = base_row["Net Income"] + d_ebit_total - d_interest - provision - interest_open + saving
 
         # cash the SOE has to find this year (negative = surplus)
         need = -ni_before_new + d_receivable + trapped_vat
-        funding = interest_new = repaid = left_over = draw = rebuilt = 0.0
+        funding = interest_new = repaid = left_over = draw = rebuilt = support = 0.0
         if need > 0:
             if cash_live:                                        # cash first, down to the floor
                 draw = min(need, max(0.0, state["Cash"] - floor * state["OpEx"])) * buf
             funding = (need - draw) / (1 - (k_int * rate) / 2)   # the rest borrowed, grossed up for half a year of interest
+            if cap > 0:                                          # borrowing stops at the debt-to-assets cap; the State injects the rest
+                ta_new = state["TotalAssets"] + d_receivable + trapped_vat + d_current_assets_arrears - draw
+                room = max(0.0, cap * ta_new - (state["TotalLiabilities"] - d_equity_fx_reval))
+                if funding > room:
+                    funding = room
+                    support = (need - draw) - funding * (1 - (k_int * rate) / 2)
             interest_new = (rate * k_int * funding) / 2
         else:                                                    # surplus repays short-term debt first
             surplus = -need
@@ -222,7 +269,8 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
         state["Receivable"] += d_receivable
         state["TrappedVAT"] += trapped_vat
         state["RetainedEarnings"] = state["RetainedEarnings"] + net_income_t
-        state["Equity"] = state["Equity"] + net_income_t + d_equity_fx_reval
+        state["Equity"] = state["Equity"] + net_income_t + d_equity_fx_reval + support
+        state["Support"] += support
         state["CurrentLiabilities"] = state["CurrentLiabilities"] + (f_short - repaid)
         state["TotalLiabilities"] = state["TotalLiabilities"] + (funding - repaid - d_equity_fx_reval)
         state["CurrentAssets"] = state["CurrentAssets"] + (d_receivable + trapped_vat + d_current_assets_arrears)
@@ -236,11 +284,12 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
             state["Cash"] += rebuilt; state["CashDrawn"] -= rebuilt
             state["CurrentAssets"] += rebuilt
         state["EBIT"] = ebit_t
-        state["Interest"] = base_row["Interest Expense"] + d_interest + interest_open + interest_new
+        state["Interest"] = base_row["Interest Expense"] + d_interest + interest_open + interest_new - saving
 
         flows = {"inc": fuel_cost_increase, "tariff": tariff_revenue, "cust": customer_share, "comp": compensation,
                  "paid": paid_now + collected, "provision": provision, "vat": trapped_vat, "fund": funding, "draw": draw,
-                 "interest_new": interest_open + interest_new, "ni": net_income_t}
+                 "interest_new": interest_open + interest_new, "ni": net_income_t, "support": support, "saving": saving,
+                 "rma_share": _ratio(state["Revenue"] - grants + tariff_revenue + customer_share, state["Revenue"] + fuel_cost_increase) if grants_known else float("nan")}
         rows.append(_snapshot(base_row["Entity"], base_row.get("Sector", ""), int(base_row["Year"]) + t, t, state, flows))
 
     return pd.DataFrame(rows)
@@ -310,6 +359,9 @@ def _snapshot(entity, sector, calendar_year, t, state, flows) -> dict:
         "Cash Funding Gap": f("fund"),                 # borrowed, after any cash drawn
         "Cash Drawdown": f("draw"),                    # paid out of the opening cash buffer
         "Interest on New Debt": f("interest_new"),
+        "Interest Saved": f("saving"),                  # cash waterfall: refinanced short-term debt at the long-term rate
+        "Emergency Support": f("support"),              # government injection above the borrowing cap
+        "Tariff Share of RMA": flows.get("rma_share", float("nan")),  # revenue excl. grants / allowed revenue (revenue + fuel-cost change)
         # stocks at year end
         "State Compensation Receivable": state["Receivable"],
         "Trapped VAT Credits": state["TrappedVAT"],
@@ -317,6 +369,8 @@ def _snapshot(entity, sector, calendar_year, t, state, flows) -> dict:
         "Supplier Arrears": state["SupplierArrears"],
         "New Long-term Debt": state["LongTermDebt"],
         "Cash": state["Cash"],
+        "Refinanced Debt": state["Refinanced"],         # short-term bank debt moved to long-term by the waterfall
+        "Cumulative Emergency Support": state["Support"],
         # liquidity and solvency
         "Current Ratio": _ratio(state["CurrentAssets"], state["CurrentLiabilities"]),
         "Adjusted Current Ratio": _ratio(state["CurrentAssets"] - illiquid, state["CurrentLiabilities"]),
@@ -487,10 +541,21 @@ def describe_active_shocks(params: dict) -> str:
             parts.append(f"{paid*100:.0f}% paid in-year")
 
     if not parts:
-        return "No shock applied (baseline)"
+        return "No shock applied (baseline)" + _policy_suffix(params)
 
     duration = params.get("shock_duration_years")
     summary = ", ".join(parts)
     if duration and step_on:
         summary += f" — active {duration}yr"
-    return summary
+    return summary + _policy_suffix(params)
+
+
+def _policy_suffix(params):
+    """Financing policies in force (not shocks): the cash waterfall and the borrowing cap."""
+    pol = []
+    if _num(params.get("waterfall_on"), 0.0) > 0 and not params.get("legacy_loss_assets"):
+        pol.append("cash waterfall")
+    cap = _num(params.get("borrowing_cap_debt_to_assets"), 0.0)
+    if cap > 0:
+        pol.append(f"borrowing cap {cap:.2f} debt/assets")
+    return (" · " + ", ".join(pol)) if pol else ""

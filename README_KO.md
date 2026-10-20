@@ -66,6 +66,10 @@ SENELEC 리뷰 노트의 내용을 반영했습니다. 유가 충격은 비용�
 - **Liquidity & State compensation 카드**(신설): 정부 보상 인식액·현금 지급액·미지급액(최대치), 현금 부족분·신규 단기차입·공급업체 미지급·이자, 유동비율·조정 유동비율(정부 미수채권·VAT 제외)·부채자산비율, 누가 부담하는지 보여주는 막대그래프, 연도별 표. 시나리오 CSV에도 같은 열이 들어갑니다.
 - **선택 데이터 열**: `Government Arrears Owed`는 기초 정부 미수채권, 새 열 `VAT Credits`는 기초 미환급 VAT로 읽고, 둘 다 조정 유동비율에서 뺍니다.
 
+- **Cash waterfall (개혁, 기본값 꺼짐)**: Cash & financing 탭의 On/Off 스위치 또는 프리셋 줄의 "+ Cash waterfall (reform)" 버튼. 수입을 보호 계좌(SENELEC의 FSE)에 모으고 IPP에 먼저 지급하는 구조입니다. 모델에서는 (1) 첫 전망연도에 단기 은행차입(`Short Term Debt` 열, 없으면 near-term maturity share × 총부채)의 설정 비율을 장기 대출로 차환해 유동부채가 줄고(총부채는 그대로) X1이 오르며, (2) 당좌차월 금리(기본 8%, 노트의 7.5~8.5%)와 장기 금리(기본 5%, 임시값)의 차이만큼 매년 이자가 절감되고, (3) 공급업체 미지급이 생기지 않습니다(이후 현금 부족분은 위에서 정한 단기/장기 비율과 금리의 은행차입). Liquidity 카드에서 같은 시나리오를 개혁 전후로 비교합니다(Z-EM·등급·유동부채·유동비율·EFC).
+- **긴급 정부지원**: *Borrowing cap before emergency support*(부채/자산 상한, 0 = 꺼짐). 연말 총부채/총자산이 상한을 넘는 만큼은 차입하지 못하고 정부가 자본으로 투입합니다(`Emergency Support`, EFC와 별도의 재정 지출). IMF SOE 스트레스 테스트의 조달 순서(현금 → 차입 → 정부 투입)의 마지막 단계입니다.
+- **RMA 대비 고객 부담 비율**(`Tariff Share of RMA`): (수입 − 정부보조금 + 요금 인상분 + pass-through) / (수입 + 연료비 증가분). Option A에서 고객 징수가 충격 후 RMA의 몇 %를 메우는지 보여줍니다. `Government Grants`가 없으면 표시하지 않습니다.
+
 **결과를 읽을 때:** 미수채권을 단기차입으로 메우면 유동자산과 유동부채가 같은 금액만큼 늘어서, 1 미만인 유동비율은 오히려 오를 수 있습니다. 보상금이 수익으로 잡히는 동안 순이익과 Z-EM은 거의 움직이지 않고, 충격은 현금·단기차입·조정 유동비율·정부 미지급액에서 드러납니다. 미지급분을 손실로 처리하면 Z-EM이 움직입니다.
 
 **기존 결과와의 관계:** 새 설정이 모두 기본값이면 기존 결과와 같습니다(`tests/check_cash_channel.py`로 확인). 예외는 손실을 차입으로 메운 해에 총자산이 더 이상 줄지 않도록 재무상태표를 맞춘 것 하나입니다. 데모 포트폴리오의 standard stress에서는 zone·등급·EFC·조기경보 결과가 그대로이고, 손실 SOE의 Z-EM 값만 덜 음수가 됩니다(SOE A 최종연도 −16.5 → −9.3). 기존 숫자가 필요하면 `config.py`의 `DEFAULT_SHOCK_PARAMS["legacy_loss_assets"]`를 `True`로 바꾸세요.
@@ -77,4 +81,5 @@ SENELEC 리뷰 노트의 내용을 반영했습니다. 유가 충격은 비용�
 ```bash
 python tests/check_engine_parity.py   # JS 엔진과 Python 결과 비교 (Node.js 필요)
 python tests/check_cash_channel.py    # 현금 채널: 기존 결과 재현, 재무상태표 항등식, 현금 계산
+python tests/check_cash_waterfall.py  # cash waterfall, 차입 상한/긴급 지원, RMA 비율 (기본값 꺼짐 = 기존 결과와 동일)
 ```

@@ -190,20 +190,40 @@
         IlliquidOpen: num(base["Government Arrears Owed"], 0) + num(base["VAT Credits"], 0),
         // opening cash (0 when the file does not report it) and the drawdown not yet rebuilt
         Cash: isNum(cash0) ? cash0 : 0, CashDrawn: 0,
+        Refinanced: 0, Support: 0,
       };
-      const out = [snap(base, 0, st, {})];
+      const grants0 = num(base[K.grants], NaN);
+      const out = [snap(base, 0, st, { rma: isNum(grants0) ? div(base[K.rev] - grants0, base[K.rev]) : NaN })];
       const sub = p.fuel_subsidy_share || 0, pt = p.tariff_passthrough || 0;
       const tariffUp = p.tariff_increase_pct || 0;
       const paidShare = num(p.comp_paid_share, 1), collectShare = num(p.comp_backlog_collected, 1), provShare = num(p.comp_provision_share, 0);
-      const stShare = num(p.cash_gap_short_term_share, 0), apShare = num(p.cash_gap_payables_share, 0);
-      const rate = num(p.new_debt_interest_rate, 0), vatTrap = num(p.vat_rate, 0) * num(p.vat_trapped_share, 0);
-      const kInt = 1 - stShare * apShare; // share of new funding that bears interest (unpaid supplier bills do not)
+      const stShare = num(p.cash_gap_short_term_share, 0), rate = num(p.new_debt_interest_rate, 0);
+      let apShare = num(p.cash_gap_payables_share, 0);
+      const vatTrap = num(p.vat_rate, 0) * num(p.vat_trapped_share, 0);
+      let kInt = 1 - stShare * apShare; // share of new funding that bears interest (unpaid supplier bills do not)
       const eps = num(p.fuel_oil_linkage, 1);                   // share of the fuel bill that moves with the oil price
       const exGrants = p.tariff_revenue_base === "revenue_ex_grants";
       const grants = num(base[K.grants], 0);                     // compensation already booked in revenue
       const buf = Math.min(1, Math.max(0, num(p.cash_buffer_share, 1)));
       const floor = num(p.cash_floor_opex_share, 0);
       const cashLive = isNum(cash0) && buf > 0 && !p.legacy_loss_assets;
+      // cash waterfall (reform): IPPs paid first, short-term bank debt refinanced long-term in year 1
+      let nts = p.near_term_maturity_share || 0;
+      const wfOn = num(p.waterfall_on, 0) > 0 && !p.legacy_loss_assets;
+      let refi = 0, saving = 0;
+      if (wfOn) {
+        const std0 = num(base["Short Term Debt"], NaN);
+        const stdBase = isNum(std0) ? std0 : nts * st.TL;      // reported short-term debt, else the near-term maturity proxy
+        refi = Math.min(Math.max(0, num(p.waterfall_refinance_share, 0)) * Math.max(0, stdBase), Math.max(0, st.CL));
+        const stRate = num(p.short_term_debt_rate, 0), ltRate = num(p.waterfall_long_term_rate, 0);
+        saving = refi * (stRate - ltRate);                     // interest saved on the refinanced debt, every year
+        apShare = 0; kInt = 1;                                 // IPPs paid first: no supplier arrears, the short-term part is bank debt
+        if (st.TL) nts = Math.max(0, nts - refi / st.TL);      // refinanced debt no longer rolls over
+        st.CL -= refi;                                         // moved to non-current: total liabilities unchanged
+        st.Refinanced = refi;
+      }
+      const cap = num(p.borrowing_cap_debt_to_assets, 0);     // 0 = no cap
+      const grantsKnown = isNum(grants0);
 
       for (let t = 1; t <= H; t++) {
         const active = t <= dur;
@@ -230,7 +250,7 @@
           dFx = -(p.fx_cost_share * st.OpEx - p.fx_revenue_share * st.Revenue) * p.fx_shock_pct;
           dRev = p.revenue_elasticity * (p.revenue_shock_pct || 0) * st.Revenue;
           const dRate = p.floating_debt_share * st.TL * (p.rate_shock_bps / 10000);
-          const dRefi = (p.near_term_maturity_share || 0) * st.TL * ((p.refinancing_spread_bps || 0) / 10000);
+          const dRefi = nts * st.TL * ((p.refinancing_spread_bps || 0) / 10000);
           dInt = dRate + dRefi;
           dReval = -p.fx_debt_share * st.TL * p.fx_shock_pct;
           dArr = -p.arrears_pct_of_revenue * st.Revenue;
@@ -245,14 +265,19 @@
         // net income before interest on this year's new borrowing
         const ebit = base[K.ebit] + dFuel + dFx + dRev;
         const intOpen = rate * (st.STDebt + st.LTDebt);
-        const ni0 = base[K.ni] + (dFuel + dFx + dRev) - dInt - provision - intOpen;
+        const ni0 = base[K.ni] + (dFuel + dFx + dRev) - dInt - provision - intOpen + saving;
 
         // cash the SOE has to find this year (negative = surplus)
         const need0 = -ni0 + dRecv + vat;
-        let fund = 0, intNew = 0, repay = 0, left = 0, draw = 0, rebuilt = 0;
+        let fund = 0, intNew = 0, repay = 0, left = 0, draw = 0, rebuilt = 0, support = 0;
         if (need0 > 0) {
           if (cashLive) draw = Math.min(need0, Math.max(0, st.Cash - floor * st.OpEx)) * buf; // cash first, down to the floor
           fund = (need0 - draw) / (1 - (kInt * rate) / 2);     // the rest borrowed, grossed up for half a year of interest
+          if (cap > 0) {                                       // borrowing stops at the debt-to-assets cap; the State injects the rest
+            const taNew = st.TA + dRecv + vat + dArr - draw;
+            const room = Math.max(0, cap * taNew - (st.TL - dReval));
+            if (fund > room) { fund = room; support = (need0 - draw) - fund * (1 - (kInt * rate) / 2); }
+          }
           intNew = (rate * kInt * fund) / 2;
         } else {                                               // surplus repays short-term debt first, the rest stays as assets
           let s = -need0;
@@ -267,7 +292,8 @@
         st.STDebt += fBank; st.Payables += fAP; st.LTDebt += fLT;
         st.Recv += dRecv; st.VAT += vat;
         st.RE += ni;
-        st.Equity += ni + dReval;
+        st.Equity += ni + dReval + support;
+        st.Support += support;
         st.CL += fST - repay;
         st.TL += fund - repay - dReval;
         st.CA += dRecv + vat + dArr;
@@ -276,8 +302,9 @@
         if (draw) { st.Cash -= draw; st.CashDrawn += draw; st.CA -= draw; st.TA -= draw; } // cash paid out
         if (rebuilt) { st.Cash += rebuilt; st.CashDrawn -= rebuilt; st.CA += rebuilt; }    // part of the surplus held as cash
         st.EBIT = ebit;
-        st.Interest = base[K.int] + dInt + intOpen + intNew;
-        out.push(snap(base, t, st, { inc, tariff, cust, comp, paidNow, unpaid, collected, provision, vat, fund, draw, fST, intNew: intOpen + intNew, ni }));
+        st.Interest = base[K.int] + dInt + intOpen + intNew - saving;
+        const rma = grantsKnown ? div(st.Revenue - grants + tariff + cust, st.Revenue + inc) : NaN; // customer share of the allowed revenue
+        out.push(snap(base, t, st, { inc, tariff, cust, comp, paidNow, unpaid, collected, provision, vat, fund, draw, fST, intNew: intOpen + intNew, ni, support, saving, rma }));
       }
       return out;
     }
@@ -303,6 +330,9 @@
         "Cash Funding Gap": f.fund || 0,                    // borrowed, after any cash drawn
         "Cash Drawdown": f.draw || 0,                       // paid out of the opening cash buffer
         "Interest on New Debt": f.intNew || 0,
+        "Interest Saved": f.saving || 0,                    // cash waterfall: refinanced short-term debt at the long-term rate
+        "Emergency Support": f.support || 0,                // government injection above the borrowing cap
+        "Tariff Share of RMA": isNum(f.rma) ? f.rma : NaN,  // revenue excl. grants / allowed revenue (revenue + fuel-cost change)
         // new stocks
         "State Compensation Receivable": st.Recv,
         "Trapped VAT Credits": st.VAT,
@@ -310,6 +340,8 @@
         "Supplier Arrears": st.Payables,
         "New Long-term Debt": st.LTDebt,
         Cash: st.Cash,
+        "Refinanced Debt": st.Refinanced,                   // short-term bank debt moved to long-term by the waterfall
+        "Cumulative Emergency Support": st.Support,
         // liquidity and solvency
         "Current Ratio": div(st.CA, st.CL),
         "Adjusted Current Ratio": div(st.CA - illiquid, st.CL), // excludes State receivables and trapped VAT
@@ -347,8 +379,13 @@
       if (p.tariff_increase_pct) parts.push(`Tariff ${pyPlus0(p.tariff_increase_pct * 100)}%`);
       if (p.fuel_subsidy_share && fuelOn) parts.push(`gov. absorbs ${Math.round(p.fuel_subsidy_share * 100)}% of fuel cost change`);
       if (p.fuel_subsidy_share && fuelOn && (p.comp_paid_share ?? 1) < 1) parts.push(`${Math.round((p.comp_paid_share ?? 1) * 100)}% paid in-year`);
-      if (!parts.length) return "No shock applied (baseline)";
-      return parts.join(", ") + (p.shock_duration_years && stepOn ? ` — active ${p.shock_duration_years}yr` : "");
+      const pol = [];                                          // financing policies in force (not shocks)
+      if ((isNum(p.waterfall_on) ? p.waterfall_on : 0) > 0 && !p.legacy_loss_assets) pol.push("cash waterfall");
+      const cap = isNum(p.borrowing_cap_debt_to_assets) ? p.borrowing_cap_debt_to_assets : 0;
+      if (cap > 0) pol.push(`borrowing cap ${cap.toFixed(2)} debt/assets`);
+      const sfx = pol.length ? " · " + pol.join(", ") : "";
+      if (!parts.length) return "No shock applied (baseline)" + sfx;
+      return parts.join(", ") + (p.shock_duration_years && stepOn ? ` — active ${p.shock_duration_years}yr` : "") + sfx;
     }
     // Seeded generator (mulberry32) + Box–Muller, so identical settings reproduce identical draws.
     function rng(seed) {

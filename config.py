@@ -384,7 +384,21 @@ DEFAULT_CASH_SETTINGS = {
     "tariff_revenue_base": "revenue",   # base of the tariff increase: "revenue" or "revenue_ex_grants" (Revenue - Government Grants)
     "cash_buffer_share": 1.0,           # share of a cash shortfall paid from opening cash before borrowing (0 = borrow everything)
     "cash_floor_opex_share": 0.0,       # cash kept back, as a share of operating expense (not drawn)
+    # Cash waterfall reform (off by default). Revenues go into a protected account
+    # (SENELEC: the FSE) and IPPs are paid first, so no supplier arrears build up and
+    # the SOE can replace overdrafts with structured long-term loans.
+    "waterfall_on": 0.0,                # 1 = reform in place (0/1)
+    "waterfall_refinance_share": 1.0,   # share of short-term bank debt refinanced long-term in projection year 1
+    "short_term_debt_rate": 0.08,       # rate on the overdrafts that are refinanced (SENELEC note: 7.5–8.5%)
+    "waterfall_long_term_rate": 0.05,   # rate on the long-term loans that replace them (placeholder)
+    # Emergency government support: new borrowing stops where total liabilities /
+    # total assets would pass this cap and the State injects the rest. 0 = no cap.
+    "borrowing_cap_debt_to_assets": 0.0,
 }
+
+# "Cash waterfall (reform)" button on the Shock Scenarios page: switches the
+# reform on, on top of whatever scenario is set.
+WATERFALL_PRESET = {"waterfall_on": 1.0, "waterfall_refinance_share": 1.0}
 
 # "Oil +60% with delayed State payment" preset on the Shock Scenarios page —
 # the SENELEC assumptions (sources in PARAMETER_REGISTER below). The fuel price
@@ -551,6 +565,9 @@ GLOSSARY = {
     "State compensation": "What the State owes the SOE for keeping tariffs below cost — for SENELEC, the gap between the regulator's Maximum Authorized Revenue (RMA) and tariff revenue. It is booked as revenue when due, but only the part actually paid arrives as cash.",
     "State compensation receivable": "Compensation the State has recognised but not yet paid. It sits in current assets, so profit looks fine, but it is not cash — the SOE has to borrow to pay its fuel bills in the meantime.",
     "Cash funding gap": "Cash the SOE is short of in a year because of losses, unpaid State compensation or input VAT it cannot recover. It is borrowed — short-term (overdrafts, short-term loans, late payment of suppliers) or long-term — and the new debt carries interest.",
+    "Cash waterfall": "A payment rule: the SOE's revenues go into a protected account and are paid out in a fixed order, with independent power producers (IPPs) paid first. Suppliers are no longer paid late, and lenders can offer long-term loans against the predictable cash flow, so expensive overdrafts can be refinanced.",
+    "Emergency support": "A capital injection from the government once the SOE cannot borrow any more (here: when total liabilities would pass a set share of total assets). It is a direct cost to the budget, on top of the expected fiscal cost.",
+    "RMA coverage": "Customer revenue (revenue less government grants, plus any tariff increase or pass-through) as a share of the regulator's Maximum Authorized Revenue (RMA) after the fuel-cost change. The rest has to come from the State.",
     "Adjusted current ratio": "Current assets minus State compensation receivables and trapped VAT credits, divided by current liabilities. Shows liquidity once paper claims are left out; the reported current ratio can even rise when a receivable is funded with short-term debt.",
 }
 
@@ -807,6 +824,17 @@ PARAMETER_REGISTER = [
        "SENELEC 2024: 214.7 bn of RMA compensation is booked inside revenue (1,015.2 bn), so a +15% tariff applies to customer sales (800.5 bn) only", "Fuel shock"),
     _p("Fuel policy and cash", "Input VAT on the extra fuel bill", f"rate {DEFAULT_CASH_SETTINGS['vat_rate']:.0%}, unrecovered {DEFAULT_CASH_SETTINGS['vat_trapped_share']:.0%}", "placeholder",
        "Senegal standard VAT rate; the unrecovered share depends on the SOE's VAT-exempt sales", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Cash waterfall reform", "off (button: on, 100% of short-term bank debt refinanced)", "design",
+       "SENELEC note (2026): revenues into a protected FSE account, IPPs paid first, overdrafts replaced by structured long-term loans. "
+       "Modelled as: short-term bank debt ('Short Term Debt', else near-term maturity share × total liabilities) moved out of current liabilities "
+       "in projection year 1 at the long-term rate, and no supplier arrears (a later cash gap is bank debt, on the split and rate set for it)", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Overdraft rate refinanced by the waterfall", f"{DEFAULT_CASH_SETTINGS['short_term_debt_rate']:.1%}", "literature",
+       "SENELEC note (2026): short-term overdrafts at 7.5–8.5%; mid-point", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Long-term rate under the waterfall", f"{DEFAULT_CASH_SETTINGS['waterfall_long_term_rate']:.1%}", "placeholder",
+       "Cost of the structured long-term loans that replace the overdrafts; set from the refinancing term sheet (DFI / concessional terms are lower)", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Borrowing cap before emergency support", "off (0)", "user",
+       "IMF SOE Stress Test Tool User Guide (2023), Section VIII: cash, then borrowing, then government injection. Set a total-liabilities / total-assets ceiling "
+       "(e.g. a covenant or the debt limit in the performance contract); the shortfall above it is a capital injection", "Shock Scenarios"),
     _p("Fuel policy and cash", "Oil-shock preset: fuel price path", "/".join(f"{v:+.0%}" for v in OIL_SHOCK_PRESET["fuel_shock_path"]) + " (years 1–5)", "literature",
        "Task team scenario (email of 16 Oct 2026): oil and HFO +60% in 2026; +30% in 2027 is a half-reversion assumption, then back to the base price", "Shock Scenarios"),
     _p("Fuel policy and cash", "Oil-shock preset: fuel share of operating expense", f"{OIL_SHOCK_PRESET['fuel_cost_share']:.0%} of OpEx", "literature",
